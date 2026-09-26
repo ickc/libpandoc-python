@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "libpandoc"
+version = "0.1.0"
+description = "pandoc as a Python library: in process, through libpandoc's C ABI, with a typed AST"
+readme = "README.md"
+license = "GPL-2.0-or-later"
+license-files = ["COPYING.md"]
+authors = [{ name = "Kolen Cheung" }]
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: C",
+    "Topic :: Text Processing :: Markup",
+]
+
+[project.urls]
+Repository = "https://github.com/ickc/libpandoc-python"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,10 @@
+bench/upper.lua
+build/
+dist/
+*.egg-info/
+.pixi/
+__pycache__/
+*.pyd
+raw/
+*.so
+wheelhouse/

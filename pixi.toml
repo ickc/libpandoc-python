@@ -1,0 +1,19 @@
+[workspace]
+name = "libpandoc-python"
+channels = ["conda-forge"]
+platforms = ["linux-64", "linux-aarch64", "osx-64", "osx-arm64", "win-64"]
+
+[dependencies]
+python = ">=3.10"
+pip = "*"
+setuptools = ">=77"
+wheel = "*"
+pytest = "*"
+ruff = "*"
+
+[tasks]
+# regenerate src/libpandoc/ast.py from schema/ast-schema.json
+gen = "python tools/gen_ast.py schema/ast-schema.json src/libpandoc/ast.py && ruff format src/libpandoc/ast.py"
+# build against a staged libpandoc in $LIBPANDOC_PREFIX
+dev = { cmd = "pip install --no-build-isolation --no-deps -e .", env = { LIBPANDOC_RPATH = "1" } }
+test = "pytest -v"

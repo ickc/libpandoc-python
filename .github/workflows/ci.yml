@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  # libpandoc's CI pokes this after updating its `continuous` release
+  repository_dispatch:
+    types: [libpandoc-updated]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LIBPANDOC_REPO: ickc/libpandoc
+  LIBPANDOC_RELEASE: continuous
+
+jobs:
+  # The committed ast.py must be what the generator makes from the schema of
+  # the libpandoc we test against.
+  generated:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Fetch libpandoc's AST schema
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$LIBPANDOC_RELEASE" -R "$LIBPANDOC_REPO" -p libpandoc-linux-64.tar.gz
+          tar -xzf libpandoc-linux-64.tar.gz ./share/libpandoc/ast-schema.json
+          python -c "import json,sys; json.dump(json.load(open('share/libpandoc/ast-schema.json')), open('schema/ast-schema.json','w'), indent=1); open('schema/ast-schema.json','a').write('\n')"
+      - name: Regenerate
+        run: |
+          pip install ruff
+          python tools/gen_ast.py schema/ast-schema.json src/libpandoc/ast.py
+          ruff format src/libpandoc/ast.py
+      - name: Check for differences
+        run: git diff --exit-code
+
+  wheel:
+    name: wheel (${{ matrix.subdir }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { subdir: linux-64, os: ubuntu-24.04 }
+          - { subdir: linux-aarch64, os: ubuntu-24.04-arm }
+          - { subdir: osx-64, os: macos-15-intel }
+          - { subdir: osx-arm64, os: macos-15 }
+          - { subdir: win-64, os: windows-2022 }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch libpandoc
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$LIBPANDOC_RELEASE" -R "$LIBPANDOC_REPO" -p "libpandoc-${{ matrix.subdir }}.tar.gz"
+          mkdir libpandoc && tar -xzf "libpandoc-${{ matrix.subdir }}.tar.gz" -C libpandoc
+          echo "LIBPANDOC_PREFIX=$PWD/libpandoc" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v6
+        id: py314
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-python@v6
+        id: py310
+        with:
+          python-version: "3.10"
+      - name: Python paths
+        run: |
+          echo "PY310=${{ steps.py310.outputs.python-path }}" >> "$GITHUB_ENV"
+          echo "PY314=${{ steps.py314.outputs.python-path }}" >> "$GITHUB_ENV"
+
+      - name: MSVC import library
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Make pandoc.lib
+        if: runner.os == 'Windows'
+        run: lib /nologo /def:libpandoc/lib/pandoc.def /out:libpandoc/lib/pandoc.lib /machine:x64
+
+      - name: Build the abi3 wheel
+        env:
+          LIBPANDOC_RPATH: "1"
+        run: |
+          "$PY310" -m pip install build
+          "$PY310" -m build --wheel --outdir raw
+          ls raw
+
+      - name: Bundle libpandoc into the wheel
+        run: |
+          case "$RUNNER_OS" in
+            Linux)
+              "$PY310" -m pip install auditwheel patchelf
+              LD_LIBRARY_PATH=$LIBPANDOC_PREFIX/lib "$PY310" -m auditwheel repair -w wheelhouse raw/*.whl ;;
+            macOS)
+              "$PY310" -m pip install delocate
+              "$(dirname "$PY310")/delocate-wheel" -w wheelhouse -v raw/*.whl ;;
+            Windows)
+              "$PY310" -m pip install delvewheel
+              "$PY310" -m delvewheel repair --add-path "$LIBPANDOC_PREFIX/bin" -w wheelhouse raw/*.whl ;;
+          esac
+          ls -la wheelhouse
+
+      - name: Test the wheel
+        run: |
+          # outside the source tree, so that the installed package is tested
+          for py in "$PY310" "$PY314"; do
+            v=venv$(basename "$(dirname "$py")")-$RANDOM
+            "$py" -m venv "$v"
+            if [[ $RUNNER_OS == Windows ]]; then bin=Scripts; else bin=bin; fi
+            "$v/$bin/python" -m pip install wheelhouse/*.whl pytest
+            (cd tests && "../$v/$bin/python" -m pytest -v -p no:cacheprovider --rootdir=. .)
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.subdir }}
+          path: wheelhouse/*.whl
