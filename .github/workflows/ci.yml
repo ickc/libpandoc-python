@@ -103,7 +103,7 @@ jobs:
           case "$RUNNER_OS" in
             Linux)
               "$PY310" -m pip install auditwheel patchelf
-              LD_LIBRARY_PATH=$LIBPANDOC_PREFIX/lib "$PY310" -m auditwheel repair -w wheelhouse raw/*.whl ;;
+              LD_LIBRARY_PATH=$LIBPANDOC_PREFIX/lib "$PY310" -m auditwheel repair --plat "manylinux_2_28_$(uname -m)" -w wheelhouse raw/*.whl ;;
             macOS)
               "$PY310" -m pip install delocate
               "$(dirname "$PY310")/delocate-wheel" -w wheelhouse -v raw/*.whl ;;
