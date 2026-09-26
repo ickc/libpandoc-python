@@ -17,8 +17,8 @@ concurrency:
 env:
   LIBPANDOC_REPO: ickc/libpandoc
   LIBPANDOC_RELEASE: continuous
-  # until libpandoc-ast is on PyPI
-  LIBPANDOC_AST: "libpandoc-ast @ git+https://github.com/ickc/libpandoc-ast@main#subdirectory=python"
+  # until pandom is on PyPI
+  PANDOM: "pandom @ git+https://github.com/ickc/pandom@main#subdirectory=python"
 
 jobs:
   wheel:
@@ -101,7 +101,7 @@ jobs:
             v=venv$(basename "$(dirname "$py")")-$RANDOM
             "$py" -m venv "$v"
             if [[ $RUNNER_OS == Windows ]]; then bin=Scripts; else bin=bin; fi
-            "$v/$bin/python" -m pip install "$LIBPANDOC_AST" wheelhouse/*.whl pytest
+            "$v/$bin/python" -m pip install "$PANDOM" wheelhouse/*.whl pytest
             (cd tests && "../$v/$bin/python" -m pytest -v -p no:cacheprovider --rootdir=. .)
           done
 

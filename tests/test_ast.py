@@ -1,12 +1,12 @@
-"""libpandoc with libpandoc-ast: reading, writing, Python filters."""
+"""libpandoc with pandom: reading, writing, Python filters."""
 
 import json
 from pathlib import Path
 
+import pandom
 import pytest
 
 import libpandoc as pandoc
-from libpandoc import ast
 
 DATA = Path(__file__).parent / "data"
 INPUTS = {
@@ -24,7 +24,7 @@ INPUTS = {
 def test_json_round_trip(name):
     out = pandoc.convert((DATA / name).read_bytes(), from_=INPUTS[name], to="json")
     j = json.loads(out)
-    assert ast.Pandoc.from_json(j).to_json() == j
+    assert pandom.Pandoc.from_json(j).to_json() == j
 
 
 @pytest.mark.parametrize("name", INPUTS)
@@ -35,9 +35,9 @@ def test_read_write_matches_convert(name):
 
 
 def upper_filter():
-    f = ast.Filter()
+    f = pandom.Filter()
 
-    @f.on(ast.Str)
+    @f.on(pandom.Str)
     def upper(s):
         s.text = s.text.upper()
 
@@ -49,18 +49,18 @@ def test_python_filter():
 
 
 def test_python_filter_sees_the_output_format():
-    f = ast.Filter()
+    f = pandom.Filter()
 
-    @f.on(ast.Str)
+    @f.on(pandom.Str)
     def tag(s, ctx):
-        return ast.Str(f"{s.text}@{ctx.format}")
+        return pandom.Str(f"{s.text}@{ctx.format}")
 
     assert pandoc.convert("x", to="plain", filters=[f]) == "x@plain\n"
 
 
 def test_function_as_filter():
     def number(doc):
-        doc.blocks.insert(0, ast.Para(ast.Str("first")))
+        doc.blocks.insert(0, pandom.Para(pandom.Str("first")))
 
     assert pandoc.convert("x", to="plain", filters=[number]) == "first\n\nx\n"
 
@@ -76,9 +76,9 @@ def test_python_and_lua_filters_in_order(tmp_path):
 
 
 def test_reading_options_apply_once():
-    f = ast.Filter()
+    f = pandom.Filter()
 
-    @f.on(ast.Pandoc)
+    @f.on(pandom.Pandoc)
     def retitle(doc):
         doc.meta["title"] = "from the filter"
 
@@ -105,5 +105,5 @@ def test_python_filter_to_a_file(tmp_path):
 
 def test_read_and_write():
     doc = pandoc.read("Hello *world*")
-    assert doc == ast.Pandoc(ast.Para(ast.Str("Hello"), ast.Space(), ast.Emph(ast.Str("world"))))
+    assert doc == pandom.Pandoc(pandom.Para(pandom.Str("Hello"), pandom.Space(), pandom.Emph(pandom.Str("world"))))
     assert pandoc.write(upper_filter()(doc), "plain") == "HELLO WORLD\n"

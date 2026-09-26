@@ -2,15 +2,15 @@
 
 import threading
 
+import pandom
 import pytest
 
 import libpandoc as pandoc
-from libpandoc import ast
 
 
 def test_versions():
     assert pandoc.pandoc_version().startswith("3.")
-    assert pandoc.pandoc_api_version()[:2] == ast.PANDOC_API_VERSION[:2]
+    assert pandoc.pandoc_api_version()[:2] == pandom.PANDOC_API_VERSION[:2]
 
 
 def test_convert_text():

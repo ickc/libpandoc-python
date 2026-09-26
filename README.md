@@ -13,7 +13,7 @@ pandoc.convert("# Report", to="docx")                    # bytes
 pandoc.convert(input_files=["a.md"], output_file="a.pdf", pdf_engine="typst")
 pandoc.run(["-f", "markdown", "-t", "latex", "--citeproc"], input=src)  # the CLI, exactly
 
-from libpandoc.ast import Filter, Header
+from pandom import Filter, Header
 
 f = Filter()
 
@@ -36,7 +36,7 @@ pandoc.write(f(doc), "plain")
   different threads run in parallel.
 - **Filters**: `filters=` takes pandoc's (Lua or JSON filter paths) and
   Python ones, mixed, in order. A Python filter is a
-  [libpandoc-ast](https://github.com/ickc/libpandoc-ast) `Filter`, or a
+  [pandom](https://github.com/ickc/pandom) `Filter`, or a
   function that takes a document and changes it; the same `Filter` also
   runs under `pandoc --filter`. Python filters run between pandoc passes
   (read to JSON, filter, write from JSON), so resources pandoc keeps in
@@ -45,12 +45,12 @@ pandoc.write(f(doc), "plain")
 
 ## The AST
 
-`libpandoc.ast` is [libpandoc-ast](https://github.com/ickc/libpandoc-ast):
-pandoc's types as Python classes, generated from pandoc-types, with checked
-fields, pandoc's JSON, and filters. It is a separate, pure-Python package (it
-needs no libpandoc), so filters written with it also run under the `pandoc`
-executable. At import, this package checks that libpandoc-ast and the loaded
-pandoc speak the same API version.
+Documents are [pandom](https://github.com/ickc/pandom) objects: pandoc's
+types as Python classes, generated from pandoc-types, with checked fields,
+pandoc's JSON, and filters. It is a separate, pure-Python package (it needs no
+libpandoc), so filters written with it also run under the `pandoc`
+executable. At import, this package checks that pandom and the loaded pandoc
+speak the same API version.
 
 ## Installing
 

@@ -5,7 +5,7 @@
     '<p><em>hi</em></p>\\n'
     >>> pandoc.run(["-f", "markdown", "-t", "latex"], input="*hi*")
     b'\\\\emph{hi}\\n'
-    >>> doc = pandoc.read("*hi*")            # the AST, libpandoc.ast
+    >>> doc = pandoc.read("*hi*")            # the AST, as pandom objects
     >>> pandoc.write(doc, to="rst")
     '*hi*\\n'
 
@@ -25,13 +25,14 @@ import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from . import _core, ast
-from .ast import Filter, Pandoc
+import pandom
+from pandom import Filter, Pandoc
+
+from . import _core
 
 __all__ = [
     "PandocError",
     "PandocWarning",
-    "ast",
     "convert",
     "default_template",
     "extensions",
@@ -181,7 +182,7 @@ def convert(
     output is written there and ``""`` is returned.
 
     ``filters`` may mix pandoc's (Lua or JSON filter paths) with Python ones:
-    ``libpandoc.ast.Filter``s, or functions that take a ``Pandoc`` and change
+    ``pandom.Filter``s, or functions that take a ``Pandoc`` and change
     it or return a new one. They run in order, as ``--filter`` would.
 
         convert("# Hi", from_="markdown", to="docx")
@@ -257,10 +258,10 @@ def _convert_with_python_filters(source: bytes | None, opts: dict[str, Any]) -> 
         else:
             middle = {**later, "from": "json", "to": "json", "filters": group}
             middle.pop("output-file", None)
-            data = _check(*_core.convert(_dumps(middle), ast.dumps(doc).encode()))
+            data = _check(*_core.convert(_dumps(middle), pandom.dumps(doc).encode()))
             doc = None
     if doc is not None:
-        data = ast.dumps(doc).encode()
+        data = pandom.dumps(doc).encode()
     return _check(*_core.convert(_dumps({**writing, "filters": last_pandoc}), data))
 
 
@@ -278,7 +279,7 @@ def run(args: Sequence[str], input: Source = None) -> bytes:
 
 def read(source: Source = None, from_: str = "markdown", /,
          options: Mapping[str, Any] | None = None, **kwargs: Any) -> Pandoc:
-    """Parse ``source`` into a document (``libpandoc.ast.Pandoc``).
+    """Parse ``source`` into a document (``pandom.Pandoc``).
 
     Other options (``input_files``, reader extensions in ``from_``, Lua
     ``filters``, ...) apply as in ``convert``.
@@ -295,13 +296,13 @@ def write(doc: Pandoc, to: str = "html", /,
     """Render a typed document, as ``convert`` from JSON would."""
     opts = _options(options, kwargs)
     opts.update({"from": "json", "to": to})
-    return convert(ast.dumps(doc).encode(), opts)
+    return convert(pandom.dumps(doc).encode(), opts)
 
 
 def _check_versions() -> None:
-    if tuple(ast.PANDOC_API_VERSION[:2]) != pandoc_api_version()[:2]:
+    if tuple(pandom.PANDOC_API_VERSION[:2]) != pandoc_api_version()[:2]:
         raise ImportError(
-            f"libpandoc-ast is for pandoc API {ast.PANDOC_API_VERSION}, "
+            f"pandom is for pandoc API {pandom.PANDOC_API_VERSION}, "
             f"but the loaded pandoc library speaks {pandoc_api_version()}"
         )
 
