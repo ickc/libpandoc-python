@@ -47,6 +47,7 @@ tests:
         - pytest
     script:
       - pytest -v tests
+      - pandocpy --version
 
 about:
   homepage: https://github.com/ickc/libpandoc-python
