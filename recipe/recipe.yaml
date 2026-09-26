@@ -7,7 +7,7 @@ context:
   build_number: 0
 
 package:
-  name: libpandoc-python
+  name: python-libpandoc
   version: ${{ version }}
 
 source:
