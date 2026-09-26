@@ -4,10 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # run by hand after libpandoc's `continuous` release changes
   workflow_dispatch:
-  # libpandoc's CI pokes this after updating its `continuous` release
-  repository_dispatch:
-    types: [libpandoc-updated]
 
 permissions:
   contents: read
