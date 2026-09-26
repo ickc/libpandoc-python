@@ -1,0 +1,55 @@
+# The Python package for conda, against the libpandoc package. One build
+# per platform serves every Python >= 3.10 (abi3).
+#
+#   rattler-build build -r recipe -c https://prefix.dev/pandoc-forge/dev -c conda-forge
+context:
+  version: "0.1.0"
+  build_number: 0
+
+package:
+  name: libpandoc-python
+  version: ${{ version }}
+
+source:
+  path: ..
+
+build:
+  number: ${{ build_number }}
+  python:
+    version_independent: true
+  # setup.py finds libpandoc in $PREFIX
+  script: python -m pip install . -vv --no-deps --no-build-isolation
+
+requirements:
+  build:
+    - ${{ compiler("c") }}
+  host:
+    - python 3.10.*
+    - python-abi3
+    - pip
+    - setuptools >=77
+    - wheel
+    - libpandoc
+  run:
+    - python >=3.10
+
+tests:
+  - python:
+      imports:
+        - libpandoc
+      python_version: ["3.10.*", "3.14.*"]
+  - files:
+      source:
+        - tests/
+    requirements:
+      run:
+        - pytest
+    script:
+      - pytest -v tests
+
+about:
+  homepage: https://github.com/ickc/libpandoc-python
+  repository: https://github.com/ickc/libpandoc-python
+  license: GPL-2.0-or-later
+  license_file: COPYING.md
+  summary: pandoc as a Python library, in process, with a typed AST
