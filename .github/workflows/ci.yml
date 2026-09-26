@@ -90,7 +90,12 @@ jobs:
         # "-" options: Git Bash would rewrite /nologo etc. as paths
         run: lib -nologo -def:libpandoc/lib/pandoc.def -out:libpandoc/lib/pandoc.lib -machine:x64
 
+      - name: Build and bundle the wheel (Linux, manylinux container)
+        if: runner.os == 'Linux'
+        run: pipx run cibuildwheel==3.* --output-dir wheelhouse
+
       - name: Build the abi3 wheel
+        if: runner.os != 'Linux'
         env:
           LIBPANDOC_RPATH: "1"
         run: |
@@ -99,11 +104,9 @@ jobs:
           ls raw
 
       - name: Bundle libpandoc into the wheel
+        if: runner.os != 'Linux'
         run: |
           case "$RUNNER_OS" in
-            Linux)
-              "$PY310" -m pip install auditwheel patchelf
-              LD_LIBRARY_PATH=$LIBPANDOC_PREFIX/lib "$PY310" -m auditwheel repair --plat "manylinux_2_28_$(uname -m)" -w wheelhouse raw/*.whl ;;
             macOS)
               "$PY310" -m pip install delocate
               "$(dirname "$PY310")/delocate-wheel" -w wheelhouse -v raw/*.whl ;;

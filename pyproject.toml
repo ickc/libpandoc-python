@@ -25,3 +25,17 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# Linux wheels: built and repaired in the manylinux_2_28 container, against
+# the libpandoc staged in ./libpandoc (CI fetches it). One abi3 build serves
+# every Python; CI tests the wheel itself afterwards.
+[tool.cibuildwheel]
+build = "cp310-*"
+skip = "*-musllinux_*"
+test-skip = "*"
+
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+environment = { LIBPANDOC_PREFIX = "/project/libpandoc", LIBPANDOC_RPATH = "1" }
+repair-wheel-command = "LD_LIBRARY_PATH=/project/libpandoc/lib auditwheel repair --plat manylinux_2_28_$(uname -m) -w {dest_dir} {wheel}"
