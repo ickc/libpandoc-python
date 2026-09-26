@@ -87,7 +87,8 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
       - name: Make pandoc.lib
         if: runner.os == 'Windows'
-        run: lib /nologo /def:libpandoc/lib/pandoc.def /out:libpandoc/lib/pandoc.lib /machine:x64
+        # "-" options: Git Bash would rewrite /nologo etc. as paths
+        run: lib -nologo -def:libpandoc/lib/pandoc.def -out:libpandoc/lib/pandoc.lib -machine:x64
 
       - name: Build the abi3 wheel
         env:
