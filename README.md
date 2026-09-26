@@ -34,14 +34,37 @@ pandoc.write(f(doc), "plain")
   `PandocWarning`.
 - **Threads:** the GIL is released while pandoc runs, so conversions in
   different threads run in parallel.
-- **Filters**: `filters=` takes pandoc's (Lua or JSON filter paths) and
-  Python ones, mixed, in order. A Python filter is a
-  [pandom](https://github.com/ickc/pandom) `Filter`, or a
-  function that takes a document and changes it; the same `Filter` also
-  runs under `pandoc --filter`. Python filters run between pandoc passes
-  (read to JSON, filter, write from JSON), so resources pandoc keeps in
-  memory, such as images embedded in a docx, need `extract_media` to
-  survive them.
+- **Filters**: `filters=` takes pandoc's (Lua or JSON filter paths,
+  `"citeproc"`) and Python ones, mixed, in order. A Python filter is a
+  [pandom](https://github.com/ickc/pandom) `Filter`, or a function that
+  takes a document (and optionally the `pandom.Conversion`) and changes it.
+  Python filters run in this process, inside the one pandoc conversion, as
+  pandoc runs a Lua filter: what the reader keeps in memory (images embedded
+  in a docx) reaches the writer, and a filter's exception is raised from
+  `convert` as it is. A filter may call pandoc itself (`convert`, or
+  `ctx.read(text)` to parse a fragment the way the document was read).
+
+## pandocpy
+
+`pandocpy` is pandoc's command line, run in process through libpandoc: it
+takes pandoc's arguments and does what pandoc does. The difference is that a
+filter named with `-F` that is an installed Python filter runs in this
+process, inside the conversion, where it knows how the document is read and
+can call pandoc cheaply:
+
+```toml
+# pyproject.toml of a filter package
+[project.entry-points."pandom.filters"]
+pantable = "pantable:filter"    # a pandom.Filter, or a function
+```
+
+```sh
+pandocpy -F pantable input.md -o output.html   # pantable in process
+pandocpy -F other-filter input.md              # anything else: as pandoc does
+```
+
+`python -m libpandoc` is the same. Informational options (`--version`,
+`--list-*`, `-D`) are answered from libpandoc's queries.
 
 ## The AST
 

@@ -18,6 +18,7 @@ given as keyword arguments with ``_`` for ``-`` (``reference_doc=``,
 from __future__ import annotations
 
 import functools
+import inspect
 import json
 import logging
 import os
@@ -171,7 +172,6 @@ def _is_text_format(to: Any) -> bool:
 def convert(
     source: Source = None,
     options: Mapping[str, Any] | None = None,
-    /,
     **kwargs: Any,
 ) -> str | bytes:
     """Convert ``source`` as ``pandoc`` would with these defaults-file options.
@@ -182,15 +182,20 @@ def convert(
     output is written there and ``""`` is returned.
 
     ``filters`` may mix pandoc's (Lua or JSON filter paths) with Python ones:
-    ``pandom.Filter``s, or functions that take a ``Pandoc`` and change
-    it or return a new one. They run in order, as ``--filter`` would.
+    ``pandom.Filter``s, or functions that take a ``Pandoc`` (and optionally
+    a ``pandom.Conversion``) and change it or return a new one. They run in
+    order, in this process, within one pandoc run, as ``--filter`` would. A
+    Python filter's exception is raised from ``convert`` as it is.
 
         convert("# Hi", from_="markdown", to="docx")
         convert(options={"input-files": ["a.md"], "output-file": "a.pdf"})
     """
     opts = _options(options, kwargs)
-    if any(_is_python_filter(f) for f in opts.get("filters") or ()):
-        out = _convert_with_python_filters(_encode(source), opts)
+    filters = opts.get("filters") or ()
+    if any(_is_python_filter(f) for f in filters):
+        callbacks, entries = _callbacks(filters, opts)
+        pandoc_opts = {**opts, "filters": entries}
+        out = _check(*_core.convert_filters(_dumps(pandoc_opts), _encode(source), callbacks))
     else:
         out = _check(*_core.convert(_dumps(opts), _encode(source)))
     if "output-file" in opts:
@@ -202,67 +207,63 @@ def _is_python_filter(f: Any) -> bool:
     return isinstance(f, Filter) or callable(f)
 
 
-# Options that act while reading, or before filters: given to the first pass
-# only, so that the later passes, which read pandoc's JSON, don't repeat them
-# (and don't undo what a filter changed, as --metadata would).
-_READING = frozenset({
-    "from", "reader", "input-file", "input-files", "file-scope",
-    "shift-heading-level-by", "base-header-level", "abbreviations",
-    "default-image-extension", "indented-code-classes", "track-changes",
-    "strip-comments", "tab-stop", "preserve-tabs", "extract-media",
-    "metadata", "metadata-file", "metadata-files", "bibliography", "csl",
-    "citation-abbreviations",
-})
+def _callbacks(
+    filters: Sequence[Any], opts: Mapping[str, Any]
+) -> tuple[tuple[Any, ...], list[Any]]:
+    """Python filters as libpandoc callbacks: consecutive ones share one
+    (one JSON round trip), and the filters list refers to them by index."""
+    callbacks: list[Any] = []
+    entries: list[Any] = []
+    group: list[Any] = []
 
+    def flush() -> None:
+        if group:
+            entries.append({"type": "callback", "index": len(callbacks)})
+            callbacks.append(_callback(tuple(group), opts))
+            group.clear()
 
-def _convert_with_python_filters(source: bytes | None, opts: dict[str, Any]) -> bytes:
-    """Run a conversion whose filters include Python ones.
-
-    pandoc can't call back into Python mid-conversion, so this runs as
-    ``pandoc -t json | filter | pandoc -f json`` would, in process: the first
-    pass reads (with the filters before the first Python one), each Python
-    filter runs on the document, pandoc filters between them run on JSON, and
-    the last pass writes (with the filters after the last Python one, then
-    citeproc). One difference from a single pandoc run: resources pandoc
-    keeps in memory, such as images embedded in a docx, don't survive the
-    passes; set ``extract_media`` to keep them.
-    """
-    filters = list(opts.get("filters") or ())
-    groups: list[tuple[bool, list[Any]]] = []
     for f in filters:
-        python = _is_python_filter(f)
-        if groups and groups[-1][0] == python:
-            groups[-1][1].append(f)
+        if _is_python_filter(f):
+            group.append(f)
         else:
-            groups.append((python, [f]))
-    later = {k: v for k, v in opts.items() if k not in _READING and k != "filters"}
-    later.pop("citeproc", None)
-    writing = {**later, "from": "json", "citeproc": opts.get("citeproc", False)}
-    fmt = opts.get("to")
-    fmt = fmt.split("+")[0].split("-")[0] if isinstance(fmt, str) else None
+            flush()
+            entries.append(f)
+    flush()
+    return tuple(callbacks), entries
 
-    first = {k: v for k, v in opts.items() if k not in ("output-file", "citeproc")}
-    first.update({"to": "json", "filters": groups.pop(0)[1] if not groups[0][0] else []})
-    data = _check(*_core.convert(_dumps(first), source))
-    last_pandoc = groups.pop()[1] if not groups[-1][0] else []
-    doc = None
-    for python, group in groups:
-        if python:
-            doc = Pandoc.from_json(json.loads(data)) if doc is None else doc
-            for f in group:
-                if isinstance(f, Filter):
-                    doc = f(doc, fmt)
-                else:
-                    result = f(doc)
-                    doc = doc if result is None else result
-        else:
-            middle = {**later, "from": "json", "to": "json", "filters": group}
-            middle.pop("output-file", None)
-            data = _check(*_core.convert(_dumps(middle), pandom.dumps(doc).encode()))
-            doc = None
-    if doc is not None:
-        data = pandom.dumps(doc).encode()
-    return _check(*_core.convert(_dumps({**writing, "filters": last_pandoc}), data))
+
+def _callback(group: tuple[Any, ...], opts: Mapping[str, Any]) -> Any:
+    """A libpandoc callback running Python filters on the document."""
+    user_opts = {k: v for k, v in opts.items() if k != "filters"}
+
+    def run(doc_json: bytes, context: bytes) -> bytes:
+        conversion = pandom.Conversion.from_context(json.loads(context), options=user_opts)
+        doc = pandom.loads(doc_json)
+        for f in group:
+            if isinstance(f, Filter):
+                doc = f(doc, conversion=conversion)
+            else:
+                result = f(doc, conversion) if _takes_conversion(f) else f(doc)
+                doc = doc if result is None else result
+            if not isinstance(doc, Pandoc):
+                raise TypeError(
+                    f"the filter {getattr(f, '__qualname__', f)!r} returned "
+                    f"{type(doc).__name__}, not a Pandoc"
+                )
+        return pandom.dumps(doc).encode()
+
+    return run
+
+
+def _takes_conversion(fn: Any) -> bool:
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        return False
+    if any(p.kind == p.VAR_POSITIONAL for p in params):
+        return True
+    positional = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    return len(positional) >= 2
 
 
 def run(args: Sequence[str], input: Source = None) -> bytes:

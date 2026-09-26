@@ -18,6 +18,9 @@ classifiers = [
     "Topic :: Text Processing :: Markup",
 ]
 
+[project.scripts]
+pandocpy = "libpandoc.cli:main"
+
 [project.urls]
 Repository = "https://github.com/ickc/libpandoc-python"
 
