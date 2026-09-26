@@ -13,13 +13,17 @@ pandoc.convert("# Report", to="docx")                    # bytes
 pandoc.convert(input_files=["a.md"], output_file="a.pdf", pdf_engine="typst")
 pandoc.run(["-f", "markdown", "-t", "latex", "--citeproc"], input=src)  # the CLI, exactly
 
-from libpandoc import ast
+from libpandoc.ast import Filter, Header
 
-doc = pandoc.read("Hello *world*")    # Pandoc(meta={}, blocks=[Para(content=[Str(text='Hello'), ...
-def shout(node):
-    if isinstance(node, ast.Str):
-        return ast.Str(node.text.upper())
-pandoc.write(pandoc.walk(doc, shout), "plain")           # 'HELLO WORLD\n'
+f = Filter()
+
+@f.on(Header)
+def demote(h):
+    h.level += 1
+
+pandoc.convert("# Hi", to="html", filters=[f])           # '<h2 id="hi">Hi</h2>\n'
+doc = pandoc.read("Hello *world*")    # Pandoc(Para(Str('Hello'), Space(), Emph(Str('world'))))
+pandoc.write(f(doc), "plain")
 ```
 
 - **Options** are pandoc's [defaults-file](https://pandoc.org/MANUAL.html#defaults-files)
@@ -30,34 +34,23 @@ pandoc.write(pandoc.walk(doc, shout), "plain")           # 'HELLO WORLD\n'
   `PandocWarning`.
 - **Threads:** the GIL is released while pandoc runs, so conversions in
   different threads run in parallel.
-- **Lua filters** work as usual (`filters=["f.lua"]`). **Python filters**
-  work on the typed AST: `read`, change it, `write`.
+- **Filters**: `filters=` takes pandoc's (Lua or JSON filter paths) and
+  Python ones, mixed, in order. A Python filter is a
+  [libpandoc-ast](https://github.com/ickc/libpandoc-ast) `Filter`, or a
+  function that takes a document and changes it; the same `Filter` also
+  runs under `pandoc --filter`. Python filters run between pandoc passes
+  (read to JSON, filter, write from JSON), so resources pandoc keeps in
+  memory, such as images embedded in a docx, need `extract_media` to
+  survive them.
 
-## The typed AST
+## The AST
 
-`libpandoc.ast` has one dataclass per pandoc-types constructor, with the
-fields in Haskell order: `Header(level, attr, content)`,
-`Link(attr, content, target)`, `Attr(identifier, classes, attributes)`.
-Types whose constructors all have no fields are enums (`Alignment.AlignLeft`).
-Every node has `to_json()` and `from_json()` for pandoc's JSON.
-
-`src/libpandoc/ast.py` is generated. libpandoc reifies pandoc-types'
-declarations at compile time and reports them as a schema;
-`tools/gen_ast.py` turns the schema into classes and JSON codecs. After a
-pandoc upgrade:
-
-```sh
-pixi run gen      # from schema/ast-schema.json, as reported by the new libpandoc
-```
-
-CI regenerates from the libpandoc it tests against and fails on any
-difference. Field names come from field types (`Attr` → `attr`, `[Inline]`
-→ `content`). A few that can't be derived are listed in `FIELD_NAMES` in
-`tools/gen_ast.py`. If a pandoc-types change needs a new entry, generation
-fails and says so; it never guesses.
-
-At import, the package checks that the loaded pandoc speaks the API
-version `ast.py` was generated for.
+`libpandoc.ast` is [libpandoc-ast](https://github.com/ickc/libpandoc-ast):
+pandoc's types as Python classes, generated from pandoc-types, with checked
+fields, pandoc's JSON, and filters. It is a separate, pure-Python package (it
+needs no libpandoc), so filters written with it also run under the `pandoc`
+executable. At import, this package checks that libpandoc-ast and the loaded
+pandoc speak the same API version.
 
 ## Installing
 
@@ -78,13 +71,13 @@ markdown):
 
 | | ms |
 |---|---|
-| markdown → html | 1099 |
-| same, with a Lua filter uppercasing every `Str` | 1337 |
-| same filter in Python: `read`, `walk`, `write` | 1493 |
-| of which Python's share (json.loads, from_json, to_json, json.dumps) | 91 |
+| markdown → html | 1097 |
+| same, with a Lua filter uppercasing every `Str` | 1352 |
+| same filter in Python (`convert(filters=[f])`) | 1551 |
+| of which Python's share (json.loads, from_json, to_json, json.dumps) | 145 |
 
-pandoc's reader and writer dominate. Exchanging the AST as JSON costs about
-12% over a Lua filter.
+pandoc's reader and writer dominate. Exchanging the AST as JSON, into
+checked Python objects, costs about 15% over a Lua filter.
 
 ## License
 

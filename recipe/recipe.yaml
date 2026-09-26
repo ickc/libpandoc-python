@@ -32,6 +32,7 @@ requirements:
     - libpandoc
   run:
     - python >=3.10
+    - libpandoc-ast >=0.1,<0.2
 
 tests:
   - python:
@@ -52,4 +53,4 @@ about:
   repository: https://github.com/ickc/libpandoc-python
   license: GPL-2.0-or-later
   license_file: COPYING.md
-  summary: pandoc as a Python library, in process, with a typed AST
+  summary: pandoc as a Python library, in process

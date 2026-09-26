@@ -1,4 +1,4 @@
-"""The generated AST codecs reproduce pandoc's JSON exactly."""
+"""libpandoc with libpandoc-ast: reading, writing, Python filters."""
 
 import json
 from pathlib import Path
@@ -20,17 +20,11 @@ INPUTS = {
 }
 
 
-def pandoc_json(name: str) -> dict:
-    out = pandoc.convert((DATA / name).read_bytes(), from_=INPUTS[name], to="json")
-    return json.loads(out)
-
-
 @pytest.mark.parametrize("name", INPUTS)
 def test_json_round_trip(name):
-    j = pandoc_json(name)
-    doc = ast.from_json(j)
-    assert isinstance(doc, ast.Pandoc)
-    assert ast.to_json(doc) == j
+    out = pandoc.convert((DATA / name).read_bytes(), from_=INPUTS[name], to="json")
+    j = json.loads(out)
+    assert ast.Pandoc.from_json(j).to_json() == j
 
 
 @pytest.mark.parametrize("name", INPUTS)
@@ -40,34 +34,76 @@ def test_read_write_matches_convert(name):
     assert pandoc.write(doc, "native") == pandoc.convert(source, from_=INPUTS[name], to="native")
 
 
-def test_every_constructor_is_exercised():
-    seen: set[type] = set()
+def upper_filter():
+    f = ast.Filter()
 
-    def visit(node):
-        seen.add(type(node))
+    @f.on(ast.Str)
+    def upper(s):
+        s.text = s.text.upper()
 
-    for name in INPUTS:
-        pandoc.walk(ast.from_json(pandoc_json(name)), visit)
-    constructors = {
-        cls for cls in vars(ast).values()
-        if isinstance(cls, type) and issubclass(cls, (ast.Block, ast.Inline)) and cls
-        not in (ast.Block, ast.Inline)
-    }
-    assert constructors <= seen, constructors - seen
+    return f
 
 
-def test_node_round_trip():
-    attr = ast.Attr("id", ["a"], [("k", "v")])
-    h = ast.Header(2, attr, [ast.Str("x"), ast.Space(), ast.Emph([ast.Str("y")])])
-    assert ast.Header.from_json(h.to_json()) == h
-    assert h.to_json() == {
-        "t": "Header",
-        "c": [2, ["id", ["a"], [["k", "v"]]], [
-            {"t": "Str", "c": "x"}, {"t": "Space"}, {"t": "Emph", "c": [{"t": "Str", "c": "y"}]}
-        ]],
-    }
+def test_python_filter():
+    assert pandoc.convert("hello *world*", to="plain", filters=[upper_filter()]) == "HELLO WORLD\n"
 
 
-def test_incompatible_api_version():
-    with pytest.raises(ValueError, match="incompatible"):
-        ast.from_json({"pandoc-api-version": [1, 22], "meta": {}, "blocks": []})
+def test_python_filter_sees_the_output_format():
+    f = ast.Filter()
+
+    @f.on(ast.Str)
+    def tag(s, ctx):
+        return ast.Str(f"{s.text}@{ctx.format}")
+
+    assert pandoc.convert("x", to="plain", filters=[f]) == "x@plain\n"
+
+
+def test_function_as_filter():
+    def number(doc):
+        doc.blocks.insert(0, ast.Para(ast.Str("first")))
+
+    assert pandoc.convert("x", to="plain", filters=[number]) == "first\n\nx\n"
+
+
+def test_python_and_lua_filters_in_order(tmp_path):
+    lua = tmp_path / "exclaim.lua"
+    lua.write_text('function Str(s) return pandoc.Str(s.text .. "!") end\n')
+    f = upper_filter()
+    assert pandoc.convert("a", to="plain", filters=[str(lua), f]) == "A!\n"
+    # upper before exclaim; then exclaim twice: before and after
+    assert pandoc.convert("a", to="plain", filters=[f, str(lua)]) == "A!\n"
+    assert pandoc.convert("a", to="plain", filters=[str(lua), f, str(lua)]) == "A!!\n"
+
+
+def test_reading_options_apply_once():
+    f = ast.Filter()
+
+    @f.on(ast.Pandoc)
+    def retitle(doc):
+        doc.meta["title"] = "from the filter"
+
+    out = pandoc.convert("# H", to="html", standalone=True, shift_heading_level_by=1,
+                         metadata={"title": "from options"}, filters=[f])
+    assert "<h2" in out and "<h3" not in out
+    assert "<title>from the filter</title>" in out
+
+
+def test_python_filter_with_citeproc():
+    src = "[@doe]\n\n# References\n"
+    bib = {"references": [{"id": "doe", "type": "book", "author": [{"family": "Doe"}],
+                           "title": "T", "issued": {"date-parts": [[2000]]}}]}
+    out = pandoc.convert(src, to="plain", citeproc=True, metadata=bib, filters=[upper_filter()])
+    # citeproc runs after the filter: its output isn't upper-cased
+    assert "(Doe 2000)" in out
+
+
+def test_python_filter_to_a_file(tmp_path):
+    dst = tmp_path / "out.html"
+    assert pandoc.convert("x", output_file=dst, filters=[upper_filter()]) == ""
+    assert dst.read_text() == "<p>X</p>\n"
+
+
+def test_read_and_write():
+    doc = pandoc.read("Hello *world*")
+    assert doc == ast.Pandoc(ast.Para(ast.Str("Hello"), ast.Space(), ast.Emph(ast.Str("world"))))
+    assert pandoc.write(upper_filter()(doc), "plain") == "HELLO WORLD\n"

@@ -71,28 +71,6 @@ def test_lua_filter(tmp_path):
     assert pandoc.convert("hi", to="plain", filters=[str(f)]) == "HI\n"
 
 
-def test_python_filter_via_ast():
-    doc = pandoc.read("hello *world*")
-
-    def upper(node):
-        if isinstance(node, ast.Str):
-            return ast.Str(node.text.upper())
-
-    assert pandoc.write(pandoc.walk(doc, upper), "plain") == "HELLO WORLD\n"
-
-
-def test_walk_splices_and_deletes():
-    doc = pandoc.read("a\n\nb\n\nc")
-
-    def action(node):
-        if isinstance(node, ast.Para) and node.content == [ast.Str("b")]:
-            return []
-        if isinstance(node, ast.Para) and node.content == [ast.Str("c")]:
-            return [node, ast.HorizontalRule()]
-
-    assert pandoc.write(pandoc.walk(doc, action), "markdown") == "a\n\nc\n\n------------------------------------------------------------------------\n"
-
-
 def test_queries():
     assert "markdown" in pandoc.input_formats()
     assert "docx" in pandoc.output_formats()

@@ -5,7 +5,7 @@
     '<p><em>hi</em></p>\\n'
     >>> pandoc.run(["-f", "markdown", "-t", "latex"], input="*hi*")
     b'\\\\emph{hi}\\n'
-    >>> doc = pandoc.read("*hi*")            # a typed AST, libpandoc.ast
+    >>> doc = pandoc.read("*hi*")            # the AST, libpandoc.ast
     >>> pandoc.write(doc, to="rst")
     '*hi*\\n'
 
@@ -26,7 +26,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from . import _core, ast
-from .walk import walk
+from .ast import Filter, Pandoc
 
 __all__ = [
     "PandocError",
@@ -42,7 +42,6 @@ __all__ = [
     "query",
     "read",
     "run",
-    "walk",
     "write",
 ]
 
@@ -181,14 +180,88 @@ def convert(
     ``bytes`` for binary ones (docx, pdf, ...); if ``output_file`` is set the
     output is written there and ``""`` is returned.
 
+    ``filters`` may mix pandoc's (Lua or JSON filter paths) with Python ones:
+    ``libpandoc.ast.Filter``s, or functions that take a ``Pandoc`` and change
+    it or return a new one. They run in order, as ``--filter`` would.
+
         convert("# Hi", from_="markdown", to="docx")
         convert(options={"input-files": ["a.md"], "output-file": "a.pdf"})
     """
     opts = _options(options, kwargs)
-    out = _check(*_core.convert(_dumps(opts), _encode(source)))
+    if any(_is_python_filter(f) for f in opts.get("filters") or ()):
+        out = _convert_with_python_filters(_encode(source), opts)
+    else:
+        out = _check(*_core.convert(_dumps(opts), _encode(source)))
     if "output-file" in opts:
         return ""
     return out.decode("utf-8") if _is_text_format(opts.get("to", "html")) else out
+
+
+def _is_python_filter(f: Any) -> bool:
+    return isinstance(f, Filter) or callable(f)
+
+
+# Options that act while reading, or before filters: given to the first pass
+# only, so that the later passes, which read pandoc's JSON, don't repeat them
+# (and don't undo what a filter changed, as --metadata would).
+_READING = frozenset({
+    "from", "reader", "input-file", "input-files", "file-scope",
+    "shift-heading-level-by", "base-header-level", "abbreviations",
+    "default-image-extension", "indented-code-classes", "track-changes",
+    "strip-comments", "tab-stop", "preserve-tabs", "extract-media",
+    "metadata", "metadata-file", "metadata-files", "bibliography", "csl",
+    "citation-abbreviations",
+})
+
+
+def _convert_with_python_filters(source: bytes | None, opts: dict[str, Any]) -> bytes:
+    """Run a conversion whose filters include Python ones.
+
+    pandoc can't call back into Python mid-conversion, so this runs as
+    ``pandoc -t json | filter | pandoc -f json`` would, in process: the first
+    pass reads (with the filters before the first Python one), each Python
+    filter runs on the document, pandoc filters between them run on JSON, and
+    the last pass writes (with the filters after the last Python one, then
+    citeproc). One difference from a single pandoc run: resources pandoc
+    keeps in memory, such as images embedded in a docx, don't survive the
+    passes; set ``extract_media`` to keep them.
+    """
+    filters = list(opts.get("filters") or ())
+    groups: list[tuple[bool, list[Any]]] = []
+    for f in filters:
+        python = _is_python_filter(f)
+        if groups and groups[-1][0] == python:
+            groups[-1][1].append(f)
+        else:
+            groups.append((python, [f]))
+    later = {k: v for k, v in opts.items() if k not in _READING and k != "filters"}
+    later.pop("citeproc", None)
+    writing = {**later, "from": "json", "citeproc": opts.get("citeproc", False)}
+    fmt = opts.get("to")
+    fmt = fmt.split("+")[0].split("-")[0] if isinstance(fmt, str) else None
+
+    first = {k: v for k, v in opts.items() if k not in ("output-file", "citeproc")}
+    first.update({"to": "json", "filters": groups.pop(0)[1] if not groups[0][0] else []})
+    data = _check(*_core.convert(_dumps(first), source))
+    last_pandoc = groups.pop()[1] if not groups[-1][0] else []
+    doc = None
+    for python, group in groups:
+        if python:
+            doc = Pandoc.from_json(json.loads(data)) if doc is None else doc
+            for f in group:
+                if isinstance(f, Filter):
+                    doc = f(doc, fmt)
+                else:
+                    result = f(doc)
+                    doc = doc if result is None else result
+        else:
+            middle = {**later, "from": "json", "to": "json", "filters": group}
+            middle.pop("output-file", None)
+            data = _check(*_core.convert(_dumps(middle), ast.dumps(doc).encode()))
+            doc = None
+    if doc is not None:
+        data = ast.dumps(doc).encode()
+    return _check(*_core.convert(_dumps({**writing, "filters": last_pandoc}), data))
 
 
 def run(args: Sequence[str], input: Source = None) -> bytes:
@@ -204,8 +277,8 @@ def run(args: Sequence[str], input: Source = None) -> bytes:
 
 
 def read(source: Source = None, from_: str = "markdown", /,
-         options: Mapping[str, Any] | None = None, **kwargs: Any) -> ast.Pandoc:
-    """Parse ``source`` into a typed document (``libpandoc.ast.Pandoc``).
+         options: Mapping[str, Any] | None = None, **kwargs: Any) -> Pandoc:
+    """Parse ``source`` into a document (``libpandoc.ast.Pandoc``).
 
     Other options (``input_files``, reader extensions in ``from_``, Lua
     ``filters``, ...) apply as in ``convert``.
@@ -214,21 +287,21 @@ def read(source: Source = None, from_: str = "markdown", /,
     opts.update({"from": from_, "to": "json"})
     opts.pop("output-file", None)
     out = _check(*_core.convert(_dumps(opts), _encode(source)))
-    return ast.from_json(json.loads(out))
+    return Pandoc.from_json(json.loads(out))
 
 
-def write(doc: ast.Pandoc, to: str = "html", /,
+def write(doc: Pandoc, to: str = "html", /,
           options: Mapping[str, Any] | None = None, **kwargs: Any) -> str | bytes:
     """Render a typed document, as ``convert`` from JSON would."""
     opts = _options(options, kwargs)
     opts.update({"from": "json", "to": to})
-    return convert(json.dumps(ast.to_json(doc)).encode(), opts)
+    return convert(ast.dumps(doc).encode(), opts)
 
 
 def _check_versions() -> None:
     if tuple(ast.PANDOC_API_VERSION[:2]) != pandoc_api_version()[:2]:
         raise ImportError(
-            f"libpandoc.ast was generated for pandoc API {ast.PANDOC_API_VERSION}, "
+            f"libpandoc-ast is for pandoc API {ast.PANDOC_API_VERSION}, "
             f"but the loaded pandoc library speaks {pandoc_api_version()}"
         )
 

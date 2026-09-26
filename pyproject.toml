@@ -5,12 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "libpandoc"
 version = "0.1.0"
-description = "pandoc as a Python library: in process, through libpandoc's C ABI, with a typed AST"
+description = "pandoc as a Python library: in process, through libpandoc's C ABI, with its AST as Python classes"
 readme = "README.md"
 license = "GPL-2.0-or-later"
 license-files = ["COPYING.md"]
 authors = [{ name = "Kolen Cheung" }]
 requires-python = ">=3.10"
+dependencies = ["libpandoc-ast >=0.1, <0.2"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: C",

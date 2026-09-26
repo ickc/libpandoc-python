@@ -17,32 +17,10 @@ concurrency:
 env:
   LIBPANDOC_REPO: ickc/libpandoc
   LIBPANDOC_RELEASE: continuous
+  # until libpandoc-ast is on PyPI
+  LIBPANDOC_AST: "libpandoc-ast @ git+https://github.com/ickc/libpandoc-ast@main#subdirectory=python"
 
 jobs:
-  # The committed ast.py must be what the generator makes from the schema of
-  # the libpandoc we test against.
-  generated:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.14"
-      - name: Fetch libpandoc's AST schema
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download "$LIBPANDOC_RELEASE" -R "$LIBPANDOC_REPO" -p libpandoc-linux-64.tar.gz
-          tar -xzf libpandoc-linux-64.tar.gz ./share/libpandoc/ast-schema.json
-          python -c "import json,sys; json.dump(json.load(open('share/libpandoc/ast-schema.json')), open('schema/ast-schema.json','w'), indent=1); open('schema/ast-schema.json','a').write('\n')"
-      - name: Regenerate
-        run: |
-          pip install ruff
-          python tools/gen_ast.py schema/ast-schema.json src/libpandoc/ast.py
-          ruff format src/libpandoc/ast.py
-      - name: Check for differences
-        run: git diff --exit-code
-
   wheel:
     name: wheel (${{ matrix.subdir }})
     runs-on: ${{ matrix.os }}
@@ -123,7 +101,7 @@ jobs:
             v=venv$(basename "$(dirname "$py")")-$RANDOM
             "$py" -m venv "$v"
             if [[ $RUNNER_OS == Windows ]]; then bin=Scripts; else bin=bin; fi
-            "$v/$bin/python" -m pip install wheelhouse/*.whl pytest
+            "$v/$bin/python" -m pip install "$LIBPANDOC_AST" wheelhouse/*.whl pytest
             (cd tests && "../$v/$bin/python" -m pytest -v -p no:cacheprovider --rootdir=. .)
           done
 
