@@ -141,7 +141,7 @@ def test_pandoc_lua(tmp_path, capfd):
     assert "on purpose" in capfd.readouterr().err
     # as pandoc's, but for build hashes in the backtrace
     assert cli.main(["lua", "--no-such-option"]) == 1
-    assert capfd.readouterr().err.startswith(
+    assert capfd.readouterr().err.replace("\r\n", "\n").startswith(
         "pandocpy: user error (unrecognized option `--no-such-option'\n"
         "Usage: pandocpy lua [options] [script [args]]\n")
 
