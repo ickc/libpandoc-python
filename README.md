@@ -13,7 +13,7 @@ pandoc.convert("# Report", to="docx")                    # bytes
 pandoc.convert(input_files=["a.md"], output_file="a.pdf", pdf_engine="typst")
 pandoc.run(["-f", "markdown", "-t", "latex", "--citeproc"], input=src)  # the CLI, exactly
 
-from pandom import Filter, Header
+from panir import Filter, Header
 
 f = Filter()
 
@@ -41,8 +41,8 @@ pandoc.write(f(doc), "plain")
   was as fast as 32.
 - **Filters**: `filters=` takes pandoc's (Lua or JSON filter paths,
   `"citeproc"`) and Python ones, mixed, in order. A Python filter is a
-  [pandom](https://github.com/ickc/pandom) `Filter`, or a function that
-  takes a document (and optionally the `pandom.Conversion`) and changes it.
+  [panir](https://github.com/ickc/panir) `Filter`, or a function that
+  takes a document (and optionally the `panir.Conversion`) and changes it.
   Python filters run in this process, inside the one pandoc conversion, as
   pandoc runs a Lua filter: what the reader keeps in memory (images embedded
   in a docx) reaches the writer, and a filter's exception is raised from
@@ -55,7 +55,7 @@ pandoc.write(f(doc), "plain")
 filters that parse fragments such as table cells. For 2000 cells, pandoc's
 part takes 138 ms on one thread, as long as one document joining them all
 (155 ms, which also lets the cells affect each other), and 38 ms on 16;
-turning the result into pandom objects takes another 26 ms. A `read` each
+turning the result into panir objects takes another 26 ms. A `read` each
 takes 725 ms. Given the conversion a filter
 runs in, it reads them the way that conversion reads its input:
 
@@ -79,8 +79,8 @@ can call pandoc cheaply:
 
 ```toml
 # pyproject.toml of a filter package
-[project.entry-points."pandom.filters"]
-pantable = "pantable:filter"    # a pandom.Filter, or a function
+[project.entry-points."panir.filters"]
+pantable = "pantable:filter"    # a panir.Filter, or a function
 ```
 
 ```sh
@@ -88,7 +88,7 @@ pandocpy -F pantable input.md -o output.html   # pantable in process
 pandocpy -F other-filter input.md              # anything else: as pandoc does
 ```
 
-Python filter scripts (`-F foo.py`, panflute, pandocfilters, pandom or plain
+Python filter scripts (`-F foo.py`, panflute, pandocfilters, panir or plain
 JSON) also run in this process, as their own `__main__` with the document as
 their standard input, saving a Python start and its imports per filter
 (about 30 ms each). The same holds for `convert(filters=["foo.py"])`, from
@@ -108,11 +108,11 @@ pandoc as a Lua interpreter. Only `pandoc server` is not supported.
 
 ## The AST
 
-Documents are [pandom](https://github.com/ickc/pandom) objects: pandoc's
+Documents are [panir](https://github.com/ickc/panir) objects: pandoc's
 types as Python classes, generated from pandoc-types, with checked fields,
 pandoc's JSON, and filters. It is a separate, pure-Python package (it needs no
 libpandoc), so filters written with it also run under the `pandoc`
-executable. At import, this package checks that pandom and the loaded pandoc
+executable. At import, this package checks that panir and the loaded pandoc
 speak the same API version.
 
 ## Installing

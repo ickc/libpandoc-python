@@ -1,9 +1,9 @@
-"""libpandoc with pandom: reading, writing, Python filters."""
+"""libpandoc with panir: reading, writing, Python filters."""
 
 import json
 from pathlib import Path
 
-import pandom
+import panir
 import pytest
 
 import libpandoc as pandoc
@@ -24,7 +24,7 @@ INPUTS = {
 def test_json_round_trip(name):
     out = pandoc.convert((DATA / name).read_bytes(), from_=INPUTS[name], to="json")
     j = json.loads(out)
-    assert pandom.Pandoc.from_json(j).to_json() == j
+    assert panir.Pandoc.from_json(j).to_json() == j
 
 
 @pytest.mark.parametrize("name", INPUTS)
@@ -35,9 +35,9 @@ def test_read_write_matches_convert(name):
 
 
 def upper_filter():
-    f = pandom.Filter()
+    f = panir.Filter()
 
-    @f.on(pandom.Str)
+    @f.on(panir.Str)
     def upper(s):
         s.text = s.text.upper()
 
@@ -49,18 +49,18 @@ def test_python_filter():
 
 
 def test_python_filter_sees_the_output_format():
-    f = pandom.Filter()
+    f = panir.Filter()
 
-    @f.on(pandom.Str)
+    @f.on(panir.Str)
     def tag(s, ctx):
-        return pandom.Str(f"{s.text}@{ctx.format}")
+        return panir.Str(f"{s.text}@{ctx.format}")
 
     assert pandoc.convert("x", to="plain", filters=[f]) == "x@plain\n"
 
 
 def test_function_as_filter():
     def number(doc):
-        doc.blocks.insert(0, pandom.Para(pandom.Str("first")))
+        doc.blocks.insert(0, panir.Para(panir.Str("first")))
 
     assert pandoc.convert("x", to="plain", filters=[number]) == "first\n\nx\n"
 
@@ -76,9 +76,9 @@ def test_python_and_lua_filters_in_order(tmp_path):
 
 
 def test_reading_options_apply_once():
-    f = pandom.Filter()
+    f = panir.Filter()
 
-    @f.on(pandom.Pandoc)
+    @f.on(panir.Pandoc)
     def retitle(doc):
         doc.meta["title"] = "from the filter"
 
@@ -108,7 +108,7 @@ def test_python_filter_to_a_file(tmp_path):
 
 def test_read_and_write():
     doc = pandoc.read("Hello *world*")
-    assert doc == pandom.Pandoc(pandom.Para(pandom.Str("Hello"), pandom.Space(), pandom.Emph(pandom.Str("world"))))
+    assert doc == panir.Pandoc(panir.Para(panir.Str("Hello"), panir.Space(), panir.Emph(panir.Str("world"))))
     assert pandoc.write(upper_filter()(doc), "plain") == "HELLO WORLD\n"
 
 
@@ -132,7 +132,7 @@ def test_media_in_the_input_survive_a_python_filter(tmp_path):
     seen = []
     out = pandoc.convert(
         options={"input-files": [str(src)], "to": "docx"},
-        filters=[lambda doc: seen.append(pandom.stringify(doc))],
+        filters=[lambda doc: seen.append(panir.stringify(doc))],
     )
     media = [n for n in zipfile.ZipFile(__import__("io").BytesIO(out)).namelist()
              if n.startswith("word/media/")]
@@ -144,9 +144,9 @@ def test_a_python_filters_exception_is_raised_as_it_is():
     class Boom(Exception):
         pass
 
-    f = pandom.Filter()
+    f = panir.Filter()
 
-    @f.on(pandom.Str)
+    @f.on(panir.Str)
     def explode(s):
         raise Boom("in the filter")
 
@@ -157,11 +157,11 @@ def test_a_python_filters_exception_is_raised_as_it_is():
 
 def test_a_python_filter_can_call_pandoc():
     """Nested conversions, from inside a conversion."""
-    f = pandom.Filter()
+    f = panir.Filter()
 
-    @f.on(pandom.Code)
+    @f.on(panir.Code)
     def render(code):
-        return pandom.RawInline("html", pandoc.convert(code.text, to="html").strip()[3:-4])
+        return panir.RawInline("html", pandoc.convert(code.text, to="html").strip()[3:-4])
 
     assert pandoc.convert("`*x*`", to="html", filters=[f]) == "<p><em>x</em></p>\n"
 
@@ -180,9 +180,9 @@ def test_reading_like_the_conversion_uses_the_reader_pandoc_decided_on(tmp_path)
     src = tmp_path / "in.rst"
     src.write_text(".. code::\n\n   *emph* and ``code``\n")
     seen = []
-    f = pandom.Filter()
+    f = panir.Filter()
 
-    @f.on(pandom.CodeBlock)
+    @f.on(panir.CodeBlock)
     def cell(code, ctx):
         seen.append((ctx.conversion.input_format, ctx.conversion.output_format, ctx.format))
         return pandoc.read(code.text, ctx.conversion).blocks
@@ -207,8 +207,8 @@ def test_a_filter_must_return_a_document():
 def test_read_many():
     docs = pandoc.read_many(["*a*", "~~b~~", ""], "commonmark_x")
     assert [d.blocks for d in docs] == [
-        [pandom.Para(pandom.Emph("a"))],
-        [pandom.Para(pandom.Strikeout("b"))],
+        [panir.Para(panir.Emph("a"))],
+        [panir.Para(panir.Strikeout("b"))],
         [],
     ]
 
@@ -217,15 +217,15 @@ def test_read_many_reads_each_on_its_own():
     """Unlike joining the texts into one document: a reference defined in
     one text doesn't resolve a link in another."""
     docs = pandoc.read_many(["[x]\n\n[x]: /url", "[x]"])
-    assert isinstance(docs[0].blocks[0].content[0], pandom.Link)
-    assert not isinstance(docs[1].blocks[0].content[0], pandom.Link)
+    assert isinstance(docs[0].blocks[0].content[0], panir.Link)
+    assert not isinstance(docs[1].blocks[0].content[0], panir.Link)
 
 
 def test_read_many_like_a_conversion():
-    conv = pandom.Conversion("html", input_format="markdown-smart", options={"tab-stop": 2})
+    conv = panir.Conversion("html", input_format="markdown-smart", options={"tab-stop": 2})
     assert pandoc.read_options(conv) == {"from": "markdown-smart", "tab-stop": 2}
     (doc,) = pandoc.read_many(["'q'"], conv)
-    assert pandom.stringify(doc) == "'q'"  # -smart: no curly quotes
+    assert panir.stringify(doc) == "'q'"  # -smart: no curly quotes
 
 
 def test_read_many_errors_name_the_input():
@@ -234,9 +234,9 @@ def test_read_many_errors_name_the_input():
 
 
 def test_read_many_in_a_filter():
-    f = pandom.Filter()
+    f = panir.Filter()
 
-    @f.on(pandom.CodeBlock)
+    @f.on(panir.CodeBlock)
     def cells(code, ctx):
         docs = pandoc.read_many(code.text.splitlines(), ctx.conversion)
         return [b for d in docs for b in d.blocks]

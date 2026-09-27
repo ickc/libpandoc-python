@@ -32,7 +32,7 @@ requirements:
     - libpandoc
   run:
     - python >=3.10
-    - pandom >=0.1,<0.2
+    - panir >=0.1,<0.2
 
 tests:
   - python:

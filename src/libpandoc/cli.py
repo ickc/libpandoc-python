@@ -6,12 +6,12 @@ It is the pandoc command (libpandoc's ``pandoc_main``: pandoc parses the
 arguments, reads and writes, and reports errors itself, with its exit
 status), with one difference: a filter named with ``-F``/``--filter``, on
 the command line or in a defaults file, that is an installed Python filter,
-an entry point in the ``pandom.filters`` group, runs in this process, inside
+an entry point in the ``panir.filters`` group, runs in this process, inside
 the conversion, instead of as a separate program:
 
     # pyproject.toml of a filter package
-    [project.entry-points."pandom.filters"]
-    pantable = "pantable:filter"      # a pandom.Filter, or a function
+    [project.entry-points."panir.filters"]
+    pantable = "pantable:filter"      # a panir.Filter, or a function
 
     $ pandocpy -F pantable input.md -o output.html
 
@@ -34,7 +34,7 @@ from typing import Any
 
 from . import PandocError, _callbacks, _core, query
 
-GROUP = "pandom.filters"
+GROUP = "panir.filters"
 PROG = "pandocpy"
 
 # pandoc's exit status for a failed filter

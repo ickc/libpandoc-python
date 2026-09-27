@@ -15,9 +15,9 @@ doc["blocks"].append({"t": "Para", "c": [{"t": "Str", "c":
 json.dump(doc, sys.stdout)
 """
 
-PANDOM = """\
+PANIR = """\
 import os
-from pandom import Filter, Pandoc, Para
+from panir import Filter, Pandoc, Para
 
 f = Filter()
 
@@ -57,9 +57,9 @@ def test_a_plain_json_script_runs_in_process(tmp_path, md, capfd, monkeypatch):
     assert f"pid={os.getpid()}|html|commonmark_x" in out
 
 
-def test_a_pandom_script_hands_its_filter_over(tmp_path, md, capfd, monkeypatch):
+def test_a_panir_script_hands_its_filter_over(tmp_path, md, capfd, monkeypatch):
     monkeypatch.delenv(_scripts.ENV, raising=False)
-    s = script(tmp_path, "pd.py", PANDOM)
+    s = script(tmp_path, "pd.py", PANIR)
     status, out, err = pandocpy(capfd, "-f", "gfm", "-t", "html", "-F", s, md)
     assert status == 0, err
     assert f"pid={os.getpid()}|gfm" in out
@@ -159,12 +159,12 @@ def test_convert_runs_a_script_in_process(tmp_path, monkeypatch):
     assert f"pid={os.getpid()}|html|commonmark_x" in out
 
 
-def test_convert_runs_a_pandom_script_knowing_the_options(tmp_path, monkeypatch):
+def test_convert_runs_a_panir_script_knowing_the_options(tmp_path, monkeypatch):
     import libpandoc
 
     monkeypatch.delenv(_scripts.ENV, raising=False)
     s = script(tmp_path, "opts.py", """\
-        from pandom import Filter, Pandoc, Para
+        from panir import Filter, Pandoc, Para
 
         f = Filter()
 

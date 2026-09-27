@@ -12,8 +12,8 @@ pytest = "*"
 ruff = "*"
 
 [tasks]
-# pandom from a checkout next to this one (as in project-libpandoc)
-dev-pandom = "pip install --no-deps -e ../pandom/python"
+# panir from a checkout next to this one (as in project-libpandoc)
+dev-panir = "pip install --no-deps -e ../panir/python"
 # build against a staged libpandoc in $LIBPANDOC_PREFIX
 dev = { cmd = "pip install --no-build-isolation --no-deps -e .", env = { LIBPANDOC_RPATH = "1" } }
 test = "pytest -v"

@@ -9,7 +9,7 @@ import time
 import warnings
 from pathlib import Path
 
-import pandom
+import panir
 
 import libpandoc as pandoc
 
@@ -37,12 +37,12 @@ timed("markdown -> markdown", lambda: pandoc.convert(src, to="markdown"))
 js = timed("markdown -> json (read + aeson encode)", lambda: pandoc.convert(src, to="json"))
 print(f"{'':<44} ({len(js) / 1e6:.1f} MB of JSON)")
 j = timed("json.loads", lambda: json.loads(js))
-doc = timed("Pandoc.from_json (build Python objects)", lambda: pandom.Pandoc.from_json(j))
+doc = timed("Pandoc.from_json (build Python objects)", lambda: panir.Pandoc.from_json(j))
 j2 = timed("to_json", lambda: doc.to_json())
 js2 = timed("json.dumps", lambda: json.dumps(j2))
 timed("json -> html (aeson decode + write)", lambda: pandoc.convert(js2, from_="json", to="html"))
 timed("json -> json (aeson decode + encode)", lambda: pandoc.convert(js2, from_="json", to="json"))
-timed("walk, no-op action on every node", lambda: pandom.walk(doc, lambda n, ctx: None))
+timed("walk, no-op action on every node", lambda: panir.walk(doc, lambda n, ctx: None))
 
 # The same filter, uppercasing every Str, as Lua (no JSON) and as Python.
 lua = Path(__file__).parent / "upper.lua"
@@ -50,10 +50,10 @@ lua.write_text("function Str(s) return pandoc.Str(s.text:upper()) end\n")
 timed("filter: Lua, markdown -> html", lambda: pandoc.convert(src, to="html", filters=[str(lua)]))
 
 
-f = pandom.Filter()
+f = panir.Filter()
 
 
-@f.on(pandom.Str)
+@f.on(panir.Str)
 def upper(s):
     s.text = s.text.upper()
 

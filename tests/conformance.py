@@ -27,7 +27,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import pandom
+import panir
 
 import libpandoc
 
@@ -41,7 +41,7 @@ def load_tests(command_dir: Path) -> list[tuple[str, int, str, str, str]]:
     docs = libpandoc.read_many([p.read_text(encoding="utf-8") for p in paths],
                                "markdown", preserve_tabs=True)
     for path, doc in zip(paths, docs):
-        blocks = [b.text for b in doc.blocks if isinstance(b, pandom.CodeBlock)]
+        blocks = [b.text for b in doc.blocks if isinstance(b, panir.CodeBlock)]
         num = 0
         for code in blocks:
             lines = hs_lines(code)

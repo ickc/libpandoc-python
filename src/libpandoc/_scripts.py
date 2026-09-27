@@ -4,9 +4,9 @@ A filter that is a Python script (``.py``, or a Python ``#!`` line) runs in
 this process instead of a new one: as its own ``__main__``, with the
 document as its standard input, the output format as its argument, pandoc's
 environment variables, and its standard output as the result. That serves
-any framework (panflute, pandocfilters, pandom, plain JSON) exactly as its
+any framework (panflute, pandocfilters, panir, plain JSON) exactly as its
 own code runs, minus starting a Python process and importing it all again.
-A pandom script's ``f.main()`` hands its ``Filter`` over instead, which then
+A panir script's ``f.main()`` hands its ``Filter`` over instead, which then
 runs on the document directly, knowing the whole conversion.
 
 Scripts may run in several threads at once (several conversions): while any
@@ -40,8 +40,8 @@ from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
-import pandom
-import pandom.filter
+import panir
+import panir.filter
 
 ENV = "PANDOCPY_SUBPROCESS"
 _MARKER = re.compile(r"^#\s*pandocpy:\s*subprocess\b", re.MULTILINE)
@@ -124,12 +124,12 @@ def callback(
 
 
 def _run_filter(
-    f: pandom.Filter, doc: bytes, ctx: Mapping[str, Any], conversion: Any, options: Any
+    f: panir.Filter, doc: bytes, ctx: Mapping[str, Any], conversion: Any, options: Any
 ) -> bytes:
-    """A pandom script's Filter, handed over: run on the document directly."""
+    """A panir script's Filter, handed over: run on the document directly."""
     user = None if options is None else {k: v for k, v in options.items() if k != "filters"}
-    out = f(pandom.loads(doc), conversion=conversion(ctx, user))
-    return pandom.dumps(out).encode()
+    out = f(panir.loads(doc), conversion=conversion(ctx, user))
+    return panir.dumps(out).encode()
 
 
 def _in_process(
@@ -137,11 +137,11 @@ def _in_process(
     doc: bytes,
     fmt: str,
     env: Mapping[str, str],
-    handed: Callable[[pandom.Filter], bytes],
+    handed: Callable[[panir.Filter], bytes],
 ) -> bytes:
-    filters: list[pandom.Filter] = []
+    filters: list[panir.Filter] = []
     out = io.BytesIO()
-    token = pandom.filter.handoff.set(filters.append)
+    token = panir.filter.handoff.set(filters.append)
     with _redirected(
         stdin=io.TextIOWrapper(io.BytesIO(doc), encoding="utf-8"),
         stdout=io.TextIOWrapper(out, encoding="utf-8", write_through=True),
@@ -160,7 +160,7 @@ def _in_process(
                 pass  # the script closed or detached it
             result = out.getvalue()
         finally:
-            pandom.filter.handoff.reset(token)
+            panir.filter.handoff.reset(token)
     if filters:
         return handed(filters[-1])
     try:

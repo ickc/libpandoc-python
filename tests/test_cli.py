@@ -54,17 +54,17 @@ def test_pandoc_parses_the_arguments(tmp_path):
 
 @pytest.fixture
 def site(tmp_path):
-    """A 'cells' filter installed as the pandom.filters entry point "cells":
+    """A 'cells' filter installed as the panir.filters entry point "cells":
     code blocks of class cells become their lines, read as the document is."""
     site = tmp_path / "site"
     info = site / "cells_filter-0.1.dist-info"
     info.mkdir(parents=True)
     (info / "METADATA").write_text("Metadata-Version: 2.1\nName: cells-filter\nVersion: 0.1\n")
-    (info / "entry_points.txt").write_text("[pandom.filters]\ncells = cells_filter:f\n")
+    (info / "entry_points.txt").write_text("[panir.filters]\ncells = cells_filter:f\n")
     (site / "cells_filter.py").write_text(textwrap.dedent("""\
         import os
         import libpandoc
-        from pandom import CodeBlock, Filter, Para, Str
+        from panir import CodeBlock, Filter, Para, Str
 
         f = Filter()
 

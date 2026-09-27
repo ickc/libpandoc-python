@@ -4,7 +4,7 @@ import sys
 import sysconfig
 import threading
 
-import pandom
+import panir
 import pytest
 
 import libpandoc as pandoc
@@ -12,13 +12,13 @@ import libpandoc as pandoc
 
 def test_versions():
     assert pandoc.pandoc_version().startswith("3.")
-    assert pandoc.pandoc_api_version()[:2] == pandom.PANDOC_API_VERSION[:2]
+    assert pandoc.pandoc_api_version()[:2] == panir.PANDOC_API_VERSION[:2]
 
 
 @pytest.mark.skipif(not sysconfig.get_config_var("Py_GIL_DISABLED"),
                     reason="free-threaded CPython only")
 def test_free_threaded_python_stays_so():
-    """Importing libpandoc (and pandom) doesn't turn the GIL back on."""
+    """Importing libpandoc (and panir) doesn't turn the GIL back on."""
     assert not sys._is_gil_enabled()
 
 

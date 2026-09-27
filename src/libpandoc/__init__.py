@@ -5,7 +5,7 @@
     '<p><em>hi</em></p>\\n'
     >>> pandoc.run(["-f", "markdown", "-t", "latex"], input="*hi*")
     b'\\\\emph{hi}\\n'
-    >>> doc = pandoc.read("*hi*")            # the AST, as pandom objects
+    >>> doc = pandoc.read("*hi*")            # the AST, as panir objects
     >>> pandoc.write(doc, to="rst")
     '*hi*\\n'
 
@@ -26,8 +26,8 @@ import warnings
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-import pandom
-from pandom import Conversion, Filter, Pandoc
+import panir
+from panir import Conversion, Filter, Pandoc
 
 from . import _core
 
@@ -201,8 +201,8 @@ def convert(
     output is written there and ``""`` is returned.
 
     ``filters`` may mix pandoc's (Lua or JSON filter paths) with Python ones:
-    ``pandom.Filter``s, or functions that take a ``Pandoc`` (and optionally
-    a ``pandom.Conversion``) and change it or return a new one. They run in
+    ``panir.Filter``s, or functions that take a ``Pandoc`` (and optionally
+    a ``panir.Conversion``) and change it or return a new one. They run in
     order, in this process, within one pandoc run, as ``--filter`` would. A
     Python filter's exception is raised from ``convert`` as it is.
 
@@ -282,7 +282,7 @@ def _callback(group: tuple[Any, ...], opts: Mapping[str, Any] | None) -> Any:
 
     def run(doc_json: bytes, context: bytes) -> bytes:
         conversion = _conversion(json.loads(context), user_opts)
-        doc = pandom.loads(doc_json)
+        doc = panir.loads(doc_json)
         for f in group:
             if isinstance(f, Filter):
                 doc = f(doc, conversion=conversion)
@@ -294,7 +294,7 @@ def _callback(group: tuple[Any, ...], opts: Mapping[str, Any] | None) -> Any:
                     f"the filter {getattr(f, '__qualname__', f)!r} returned "
                     f"{type(doc).__name__}, not a Pandoc"
                 )
-        return pandom.dumps(doc).encode()
+        return panir.dumps(doc).encode()
 
     return run
 
@@ -324,7 +324,7 @@ def run(args: Sequence[str], input: Source = None) -> bytes:
 
 def read(source: Source = None, from_: str | Conversion = "markdown", /,
          options: Mapping[str, Any] | None = None, **kwargs: Any) -> Pandoc:
-    """Parse ``source`` into a document (``pandom.Pandoc``).
+    """Parse ``source`` into a document (``panir.Pandoc``).
 
     ``from_`` is a format, or, in a filter, the conversion the filter runs
     in (``ctx.conversion``): then ``source`` is read the way that
@@ -425,13 +425,13 @@ def write(doc: Pandoc, to: str = "html", /,
     """Render a typed document, as ``convert`` from JSON would."""
     opts = _options(options, kwargs)
     opts.update({"from": "json", "to": to})
-    return convert(pandom.dumps(doc).encode(), opts)
+    return convert(panir.dumps(doc).encode(), opts)
 
 
 def _check_versions() -> None:
-    if tuple(pandom.PANDOC_API_VERSION[:2]) != pandoc_api_version()[:2]:
+    if tuple(panir.PANDOC_API_VERSION[:2]) != pandoc_api_version()[:2]:
         raise ImportError(
-            f"pandom is for pandoc API {pandom.PANDOC_API_VERSION}, "
+            f"panir is for pandoc API {panir.PANDOC_API_VERSION}, "
             f"but the loaded pandoc library speaks {pandoc_api_version()}"
         )
 

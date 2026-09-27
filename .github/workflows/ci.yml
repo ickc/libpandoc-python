@@ -17,8 +17,8 @@ concurrency:
 env:
   LIBPANDOC_REPO: ickc/libpandoc
   LIBPANDOC_RELEASE: continuous
-  # until pandom is on PyPI
-  PANDOM: "pandom @ git+https://github.com/ickc/pandom@main#subdirectory=python"
+  # until panir is on PyPI
+  PANIR: "panir @ git+https://github.com/ickc/panir@main#subdirectory=python"
 
 jobs:
   wheel:
@@ -108,7 +108,7 @@ jobs:
             v=venv$(basename "$(dirname "$py")")-$RANDOM
             "$py" -m venv "$v"
             if [[ $RUNNER_OS == Windows ]]; then bin=Scripts; else bin=bin; fi
-            "$v/$bin/python" -m pip install "$PANDOM" pytest panflute pandocfilters
+            "$v/$bin/python" -m pip install "$PANIR" pytest panflute pandocfilters
             # the abi3 wheel, or the free-threaded one
             "$v/$bin/python" -m pip install --no-index --find-links wheelhouse libpandoc
             (cd tests && "../$v/$bin/python" -m pytest -v -p no:cacheprovider --rootdir=. .)
@@ -118,7 +118,7 @@ jobs:
         if: matrix.subdir == 'linux-64'
         run: |
           python -m venv venv-conf
-          venv-conf/bin/python -m pip install "$PANDOM" pytest
+          venv-conf/bin/python -m pip install "$PANIR" pytest
           venv-conf/bin/python -m pip install --no-index --find-links wheelhouse libpandoc
           v=$(venv-conf/bin/python -c "import libpandoc; print(libpandoc.pandoc_version())")
           # the pandoc command and source of the version libpandoc embeds
