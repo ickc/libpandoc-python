@@ -336,10 +336,14 @@ PyMODINIT_FUNC
 PyInit__core(void)
 {
     PyObject *m;
-    if (pandoc_abi_version() != LIBPANDOC_ABI_VERSION) {
+    /* the same major version, and at least the minor one built against */
+    int abi = pandoc_abi_version();
+    if (abi / 1000 != LIBPANDOC_ABI_VERSION_MAJOR || abi % 1000 < LIBPANDOC_ABI_VERSION_MINOR) {
         PyErr_Format(PyExc_ImportError,
-                     "libpandoc ABI version %d, but this module was built for %d",
-                     pandoc_abi_version(), LIBPANDOC_ABI_VERSION);
+                     "libpandoc's C interface is version %d.%d, but this module needs "
+                     "%d.%d or a later %d.x",
+                     abi / 1000, abi % 1000, LIBPANDOC_ABI_VERSION_MAJOR,
+                     LIBPANDOC_ABI_VERSION_MINOR, LIBPANDOC_ABI_VERSION_MAJOR);
         return NULL;
     }
     m = PyModule_Create(&core_module);

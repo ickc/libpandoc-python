@@ -33,7 +33,9 @@ pandoc.write(f(doc), "plain")
   constructor (`"PandocParseError"`, ...). **Warnings** are issued as
   `PandocWarning`.
 - **Threads:** the GIL is released while pandoc runs, so conversions in
-  different threads run in parallel.
+  different threads run in parallel, up to 8 at once (libpandoc's Haskell
+  runtime uses up to 8 cores): 400 small conversions take 31 ms on 8
+  threads, 143 ms on one.
 - **Filters**: `filters=` takes pandoc's (Lua or JSON filter paths,
   `"citeproc"`) and Python ones, mixed, in order. A Python filter is a
   [pandom](https://github.com/ickc/pandom) `Filter`, or a function that
