@@ -131,6 +131,26 @@ def test_a_filters_exception(tmp_path, monkeypatch, capfd):
     assert "boom in the filter" in err and "Traceback" in err
 
 
+def test_pandoc_lua(tmp_path, capfd):
+    script = tmp_path / "s.lua"
+    script.write_text('print(table.concat(arg, ","))\n'
+                      'print(pandoc.write(pandoc.read("*hi*"), "html"))\n')
+    assert cli.main(["lua", str(script), "a", "b"]) == 0
+    assert capfd.readouterr().out == "a,b\n<p><em>hi</em></p>\n"
+    assert cli.main(["lua", "-e", "error('on purpose')"]) == 84
+    assert "on purpose" in capfd.readouterr().err
+    # as pandoc's, but for build hashes in the backtrace
+    assert cli.main(["lua", "--no-such-option"]) == 1
+    assert capfd.readouterr().err.startswith(
+        "pandocpy: user error (unrecognized option `--no-such-option'\n"
+        "Usage: pandocpy lua [options] [script [args]]\n")
+
+
+def test_pandoc_server_is_unsupported(capfd):
+    assert cli.main(["server"]) == 4
+    assert "Server mode unsupported" in capfd.readouterr().err
+
+
 def _same_pandoc():
     exe = shutil.which("pandoc")
     if exe is None:
@@ -150,6 +170,9 @@ def _same_pandoc():
     (["-D", "html"], ""),
     (["-t", "html", "-M", "title=T", "-s", "--metadata=lang:de"], "x\n"),
     (["-t", "native", "--columns=20", "-t", "plain"], "a b c d e f g h i j k l m\n"),
+    (["lua", "-e", "print(pandoc.write(pandoc.read('*x*'), 'html'))"], ""),
+    (["lua", "-", "a"], "print(#arg, arg[1])\n"),
+    (["lua", "-e", "error('x')"], ""),
 ])
 def test_same_as_pandoc(args, input):
     """Output, errors and exit status as the pandoc command's."""
