@@ -211,8 +211,8 @@ def convert(
     """
     opts = _options(options, kwargs)
     filters = opts.get("filters") or ()
-    if any(_is_python_filter(f) for f in filters):
-        callbacks, entries = _callbacks(filters, opts)
+    callbacks, entries = _callbacks(filters, opts)
+    if callbacks:
         pandoc_opts = {**opts, "filters": entries}
         out = _check(*_core.convert_filters(_dumps(pandoc_opts), _encode(source), callbacks))
     else:
@@ -227,10 +227,15 @@ def _is_python_filter(f: Any) -> bool:
 
 
 def _callbacks(
-    filters: Sequence[Any], opts: Mapping[str, Any]
+    filters: Sequence[Any], opts: Mapping[str, Any] | None
 ) -> tuple[tuple[Any, ...], list[Any]]:
-    """Python filters as libpandoc callbacks: consecutive ones share one
-    (one JSON round trip), and the filters list refers to them by index."""
+    """Python filters as libpandoc callbacks, and the filters list referring
+    to them by index. Consecutive Python objects (Filters, functions) share
+    one callback (one JSON round trip). Python filter scripts (a JSON
+    filter's path, ``.py`` or a Python ``#!``) run in this process, each its
+    own callback, unless opted out (see ``libpandoc._scripts``)."""
+    from . import _scripts
+
     callbacks: list[Any] = []
     entries: list[Any] = []
     group: list[Any] = []
@@ -244,11 +249,30 @@ def _callbacks(
     for f in filters:
         if _is_python_filter(f):
             group.append(f)
+            continue
+        flush()
+        path = _json_filter_path(f)
+        if path is not None and _scripts.is_python_script(path):
+            entries.append({"type": "callback", "index": len(callbacks)})
+            callbacks.append(_scripts.callback(
+                path, pandoc_version(), _conversion, options=opts,
+                in_process=_scripts.opted_out(path) is None,
+            ))
         else:
-            flush()
             entries.append(f)
     flush()
     return tuple(callbacks), entries
+
+
+def _json_filter_path(f: Any) -> str | None:
+    """The path of a JSON filter as pandoc reads the "filters" option: a
+    string not ending in .lua (nor "citeproc"), or {"type": "json"}."""
+    if isinstance(f, (str, os.PathLike)):
+        s = os.fspath(f)
+        return None if s == "citeproc" or s.lower().endswith(".lua") else s
+    if isinstance(f, Mapping) and f.get("type") == "json":
+        return f.get("path")
+    return None
 
 
 def _callback(group: tuple[Any, ...], opts: Mapping[str, Any] | None) -> Any:

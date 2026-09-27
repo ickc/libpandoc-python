@@ -32,15 +32,7 @@ from collections.abc import Callable, Mapping, Sequence
 from importlib.metadata import PackageNotFoundError, distributions, version
 from typing import Any
 
-from . import (
-    PandocError,
-    _callback,
-    _conversion,
-    _core,
-    _scripts,
-    pandoc_version,
-    query,
-)
+from . import PandocError, _callbacks, _core, query
 
 GROUP = "pandom.filters"
 PROG = "pandocpy"
@@ -65,36 +57,15 @@ def installed_filters() -> dict[str, Any]:
 
 def plan(
     filters: Sequence[Mapping[str, Any]], available: Mapping[str, Any]
-) -> tuple[list[Any], list[Callable[..., Any]]]:
-    """pandoc's filter list with the installed Python filters as callbacks:
-    each run of consecutive ones becomes one callback (one pass of JSON)."""
-    entries: list[Any] = []
-    callbacks: list[Callable[..., Any]] = []
-    group: list[Any] = []
-
-    def flush() -> None:
-        if group:
-            entries.append({"type": "callback", "index": len(callbacks)})
-            callbacks.append(_callback(tuple(group), None))
-            group.clear()
-
+) -> tuple[list[Any], tuple[Callable[..., Any], ...]]:
+    """pandoc's filter list with installed Python filters (loaded) and Python
+    filter scripts as callbacks: each run of consecutive installed ones is
+    one callback (one pass of JSON), each script one."""
+    listed: list[Any] = []
     for f in filters:
-        path = f["path"] if f.get("type") == "json" else None
-        ep = available.get(path) if path is not None else None
-        if ep is not None:
-            group.append(ep.load())
-            continue
-        flush()
-        if path is not None and _scripts.is_python_script(path):
-            # with this Python (and its packages), in process unless opted out
-            in_process = _scripts.opted_out(path) is None
-            entries.append({"type": "callback", "index": len(callbacks)})
-            callbacks.append(
-                _scripts.callback(path, pandoc_version(), _conversion, in_process=in_process)
-            )
-        else:
-            entries.append(dict(f))
-    flush()
+        ep = available.get(f["path"]) if f.get("type") == "json" else None
+        listed.append(ep.load() if ep is not None else dict(f))
+    callbacks, entries = _callbacks(listed, None)
     return entries, callbacks
 
 
