@@ -103,7 +103,8 @@ way. A script runs as a subprocess instead:
 - if it fails in process: it is run again as a subprocess, with a warning.
 
 `python -m libpandoc` is the same as `pandocpy`, which is pandoc's command
-line exactly (pandoc's own command tests pass), `lua` and `server` aside.
+line exactly (pandoc's own command tests pass), `pandocpy lua` included:
+pandoc as a Lua interpreter. Only `pandoc server` is not supported.
 
 ## The AST
 
