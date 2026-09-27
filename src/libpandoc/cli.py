@@ -15,8 +15,11 @@ the conversion, instead of as a separate program:
 
     $ pandocpy -F pantable input.md -o output.html
 
-Consecutive Python filters share one pass over the document. Other filters
-run as with pandoc.
+Consecutive installed Python filters share one pass over the document.
+
+Python filter scripts (``-F foo.py``) run in this process too, unless they or
+the user say otherwise (``# pandocpy: subprocess``, ``$PANDOCPY_SUBPROCESS``):
+see ``libpandoc._scripts``. Other filters run as with pandoc.
 """
 
 from __future__ import annotations
@@ -26,10 +29,18 @@ import os
 import sys
 import traceback
 from collections.abc import Callable, Mapping, Sequence
-from importlib.metadata import PackageNotFoundError, entry_points, version
+from importlib.metadata import PackageNotFoundError, distributions, version
 from typing import Any
 
-from . import PandocError, _callback, _core, query
+from . import (
+    PandocError,
+    _callback,
+    _conversion,
+    _core,
+    _scripts,
+    pandoc_version,
+    query,
+)
 
 GROUP = "pandom.filters"
 PROG = "pandocpy"
@@ -39,8 +50,17 @@ FILTER_FAILED = 83
 
 
 def installed_filters() -> dict[str, Any]:
-    """The installed Python filters, by name (not yet loaded)."""
-    return {ep.name: ep for ep in entry_points(group=GROUP)}
+    """The installed Python filters, by name (not yet loaded).
+
+    Installed ones only: the current directory, which ``python -m`` puts on
+    ``sys.path``, isn't searched (it may be large, and isn't installed)."""
+    here = {"", os.getcwd()}
+    path = [p for p in sys.path if p not in here]
+    found: dict[str, Any] = {}
+    for dist in distributions(path=path):
+        for ep in dist.entry_points.select(group=GROUP):
+            found.setdefault(ep.name, ep)
+    return found
 
 
 def plan(
@@ -59,11 +79,20 @@ def plan(
             group.clear()
 
     for f in filters:
-        ep = available.get(f["path"]) if f.get("type") == "json" else None
+        path = f["path"] if f.get("type") == "json" else None
+        ep = available.get(path) if path is not None else None
         if ep is not None:
             group.append(ep.load())
+            continue
+        flush()
+        if path is not None and _scripts.is_python_script(path):
+            # with this Python (and its packages), in process unless opted out
+            in_process = _scripts.opted_out(path) is None
+            entries.append({"type": "callback", "index": len(callbacks)})
+            callbacks.append(
+                _scripts.callback(path, pandoc_version(), _conversion, in_process=in_process)
+            )
         else:
-            flush()
             entries.append(dict(f))
     flush()
     return entries, callbacks
@@ -71,13 +100,15 @@ def plan(
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    available = installed_filters()
     try:
         parsed = query("parse-args", args=args)
     except PandocError:
         parsed = {}  # pandoc_main reports it, as pandoc does
+    wanted = [f for f in parsed.get("filters", ()) if f.get("type") == "json"]
+    help_ = parsed.get("informational") == "Help"
+    available = installed_filters() if wanted or help_ else {}
     filters_json, callbacks = None, ()
-    if "filters" in parsed and available:
+    if "filters" in parsed:
         entries, cbs = plan(parsed["filters"], available)
         if cbs:
             filters_json = json.dumps(entries).encode()

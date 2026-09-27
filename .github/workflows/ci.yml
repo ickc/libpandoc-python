@@ -101,7 +101,7 @@ jobs:
             v=venv$(basename "$(dirname "$py")")-$RANDOM
             "$py" -m venv "$v"
             if [[ $RUNNER_OS == Windows ]]; then bin=Scripts; else bin=bin; fi
-            "$v/$bin/python" -m pip install "$PANDOM" wheelhouse/*.whl pytest
+            "$v/$bin/python" -m pip install "$PANDOM" wheelhouse/*.whl pytest panflute pandocfilters
             (cd tests && "../$v/$bin/python" -m pytest -v -p no:cacheprovider --rootdir=. .)
           done
 

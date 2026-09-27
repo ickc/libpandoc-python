@@ -88,7 +88,18 @@ pandocpy -F pantable input.md -o output.html   # pantable in process
 pandocpy -F other-filter input.md              # anything else: as pandoc does
 ```
 
-`python -m libpandoc` is the same. Informational options (`--version`,
+Python filter scripts (`-F foo.py`, panflute, pandocfilters, pandom or plain
+JSON) also run in pandocpy's process, as their own `__main__` with the
+document as their standard input, saving a Python start and its imports per
+filter (about 30 ms each). Either way they run with pandocpy's Python and
+packages. A script runs as a subprocess instead:
+
+- if its author says so, with a line `# pandocpy: subprocess` near its top;
+- if the user says so: `PANDOCPY_SUBPROCESS=foo.py,bar` (paths, file names,
+  names without `.py`, or `*` for all);
+- if it fails in process: it is run again as a subprocess, with a warning.
+
+`python -m libpandoc` is the same as `pandocpy`. Informational options (`--version`,
 `--list-*`, `-D`) are answered from libpandoc's queries.
 
 ## The AST
