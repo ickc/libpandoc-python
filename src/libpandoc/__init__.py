@@ -38,6 +38,7 @@ __all__ = [
     "default_template",
     "extensions",
     "input_formats",
+    "num_threads",
     "output_formats",
     "pandoc_api_version",
     "pandoc_version",
@@ -46,6 +47,7 @@ __all__ = [
     "read_many",
     "read_options",
     "run",
+    "set_num_threads",
     "write",
 ]
 
@@ -121,6 +123,21 @@ def query(name: str, **params: Any) -> Any:
     """Answer one of libpandoc's queries (see libpandoc.h), as parsed JSON."""
     raw = json.dumps({"query": name, **params}).encode()
     return json.loads(_check(*_core.query(raw)))
+
+
+def num_threads() -> int:
+    """How many threads pandoc runs on: one per logical core this process
+    may use (its CPU affinity), unless ``$LIBPANDOC_NUM_THREADS`` (read at
+    start, like ``$OMP_NUM_THREADS``) or ``set_num_threads`` says otherwise.
+    Conversions from different Python threads, and ``read_many``, run in
+    parallel on them."""
+    return int(query("num-threads"))
+
+
+def set_num_threads(n: int) -> int:
+    """Run pandoc on ``n`` threads from now on (at least 1); returns the new
+    number."""
+    return _core.set_num_threads(n)
 
 
 @functools.cache

@@ -369,6 +369,20 @@ core_read_many(PyObject *self, PyObject *args)
     return unpack(r);
 }
 
+/* set_num_threads(n: int) -> int */
+static PyObject *
+core_set_num_threads(PyObject *self, PyObject *args)
+{
+    int n, r;
+    (void)self;
+    if (!PyArg_ParseTuple(args, "i", &n))
+        return NULL;
+    Py_BEGIN_ALLOW_THREADS
+    r = pandoc_set_num_threads(n);
+    Py_END_ALLOW_THREADS
+    return PyLong_FromLong(r);
+}
+
 static PyObject *
 core_abi_version(PyObject *self, PyObject *noargs)
 {
@@ -391,6 +405,8 @@ static PyMethodDef core_methods[] = {
      "read_many(request: bytes) -> (status, output, error_kind, error_message, log)"},
     {"query", core_query, METH_VARARGS,
      "query(query: bytes) -> (status, output, error_kind, error_message, log)"},
+    {"set_num_threads", core_set_num_threads, METH_VARARGS,
+     "set_num_threads(n: int) -> int: pandoc's threads from now on; the new number"},
     {"abi_version", core_abi_version, METH_NOARGS,
      "abi_version() -> int: LIBPANDOC_ABI_VERSION of the loaded library"},
     {NULL, NULL, 0, NULL}

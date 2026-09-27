@@ -33,8 +33,12 @@ pandoc.write(f(doc), "plain")
   constructor (`"PandocParseError"`, ...). **Warnings** are issued as
   `PandocWarning`.
 - **Threads:** the GIL is released while pandoc runs, so conversions in
-  different threads run in parallel, on all cores: 2000 small conversions
-  run 6.6 times as fast on 8 threads as on one, 8.5 times on 32.
+  different threads run in parallel. pandoc runs on one thread per logical
+  core this process may use, or `$LIBPANDOC_NUM_THREADS` (read at start,
+  like `$OMP_NUM_THREADS`); `num_threads()` and `set_num_threads(n)` query
+  and change it. 2000 small conversions from a pool of Python threads run
+  5 times as fast on 16 threads as on one; on a 16-core, 32-thread CPU, 16
+  was as fast as 32.
 - **Filters**: `filters=` takes pandoc's (Lua or JSON filter paths,
   `"citeproc"`) and Python ones, mixed, in order. A Python filter is a
   [pandom](https://github.com/ickc/pandom) `Filter`, or a function that
@@ -47,10 +51,12 @@ pandoc.write(f(doc), "plain")
 
 ## Reading fragments, from filters
 
-`read_many` parses many texts at once, each on its own, on all cores: for
-filters that parse fragments such as table cells (2000 cells: 107 ms, against
-725 ms for a `read` each, and 184 ms for joining them into one document,
-which also lets the cells affect each other). Given the conversion a filter
+`read_many` parses many texts at once, each on its own, in parallel: for
+filters that parse fragments such as table cells. For 2000 cells, pandoc's
+part takes 138 ms on one thread, as long as one document joining them all
+(155 ms, which also lets the cells affect each other), and 38 ms on 16;
+turning the result into pandom objects takes another 26 ms. A `read` each
+takes 725 ms. Given the conversion a filter
 runs in, it reads them the way that conversion reads its input:
 
 ```python

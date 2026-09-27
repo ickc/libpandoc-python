@@ -90,3 +90,26 @@ def test_threads():
     for t in threads:
         t.join()
     assert results == {i: f"<p><em>{i}</em></p>\n" for i in range(16)}
+
+
+def test_num_threads():
+    n = pandoc.num_threads()
+    assert n >= 1
+    try:
+        assert pandoc.set_num_threads(2) == 2
+        assert pandoc.num_threads() == 2
+        assert pandoc.convert("*x*") == "<p><em>x</em></p>\n"
+        assert pandoc.set_num_threads(0) == 1
+    finally:
+        pandoc.set_num_threads(n)
+
+
+def test_num_threads_from_the_environment():
+    import subprocess
+    import sys
+    out = subprocess.run(
+        [sys.executable, "-c", "import libpandoc; print(libpandoc.num_threads())"],
+        env={**__import__("os").environ, "LIBPANDOC_NUM_THREADS": "3"},
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert out.strip() == "3"
