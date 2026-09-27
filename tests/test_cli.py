@@ -100,7 +100,26 @@ def test_an_installed_filter_runs_in_process(installed_filter):
     assert lines[0] == "<p><em>a</em> <del>b</del></p>"
     fmt, _, filter_pid = lines[1].removeprefix("<p>").removesuffix("</p>").partition("|")
     assert fmt == "commonmark_x"
-    assert int(filter_pid) == pid  # pandocpy's own process
+    # pandocpy's own process (on Windows, a venv's python.exe is a launcher
+    # that starts the interpreter as a child, so the pid can't be compared)
+    if sys.platform != "win32":
+        assert int(filter_pid) == pid
+
+
+def test_an_installed_filter_runs_in_this_process(monkeypatch):
+    import pandom
+
+    pids = []
+    f = pandom.Filter()
+
+    @f.on(pandom.Pandoc)
+    def record(doc):
+        pids.append(os.getpid())
+
+    monkeypatch.setattr(cli, "installed_filters", lambda: {"rec": FakeEntryPoint(f)})
+    out = cli.run(["-t", "html", "-F", "rec"], b"hi")
+    assert out == b"<p>hi</p>\n"
+    assert pids == [os.getpid()]
 
 
 def test_help_lists_installed_filters(installed_filter):
