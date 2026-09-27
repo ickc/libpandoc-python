@@ -105,6 +105,20 @@ jobs:
             (cd tests && "../$v/$bin/python" -m pytest -v -p no:cacheprovider --rootdir=. .)
           done
 
+      - name: Same as the pandoc command (pandoc's own command tests)
+        if: matrix.subdir == 'linux-64'
+        run: |
+          python -m venv venv-conf
+          venv-conf/bin/python -m pip install "$PANDOM" wheelhouse/*.whl pytest
+          v=$(venv-conf/bin/python -c "import libpandoc; print(libpandoc.pandoc_version())")
+          # the pandoc command and source of the version libpandoc embeds
+          curl -fsSL "https://github.com/jgm/pandoc/releases/download/$v/pandoc-$v-linux-amd64.tar.gz" | tar -xz
+          curl -fsSL "https://hackage.haskell.org/package/pandoc-$v/pandoc-$v.tar.gz" | tar -xz -C "$RUNNER_TEMP"
+          export PATH="$PWD/pandoc-$v/bin:$PATH"
+          pandoc --version | head -1
+          (cd tests && ../venv-conf/bin/python -m pytest -v -p no:cacheprovider --rootdir=. test_cli.py)
+          venv-conf/bin/python tests/conformance.py "$RUNNER_TEMP/pandoc-$v" --pandoc "$PWD/pandoc-$v/bin/pandoc"
+
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.subdir }}

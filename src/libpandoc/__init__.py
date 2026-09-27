@@ -234,9 +234,10 @@ def _callbacks(
     return tuple(callbacks), entries
 
 
-def _callback(group: tuple[Any, ...], opts: Mapping[str, Any]) -> Any:
-    """A libpandoc callback running Python filters on the document."""
-    user_opts = {k: v for k, v in opts.items() if k != "filters"}
+def _callback(group: tuple[Any, ...], opts: Mapping[str, Any] | None) -> Any:
+    """A libpandoc callback running Python filters on the document (``opts``:
+    the conversion's options, if known)."""
+    user_opts = None if opts is None else {k: v for k, v in opts.items() if k != "filters"}
 
     def run(doc_json: bytes, context: bytes) -> bytes:
         conversion = _conversion(json.loads(context), user_opts)

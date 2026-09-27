@@ -303,6 +303,54 @@ core_query(PyObject *self, PyObject *args)
     return unpack(r);
 }
 
+/* main(argv: tuple[bytes, ...], filters: bytes | None,
+ *      callbacks: tuple[Callable[[bytes, bytes], bytes], ...]) -> int
+ * The pandoc command in this process (argv[0] is the program's name); a
+ * callback's exception is raised after pandoc has reported the failure. */
+static PyObject *
+core_main(PyObject *self, PyObject *args)
+{
+    PyObject *argv_tuple, *filters_obj, *fns, *result = NULL;
+    const char *fjson;
+    Py_ssize_t fjson_len, argc, i, n;
+    const char **argv = NULL;
+    pandoc_filter *filters = NULL;
+    py_filter *data = NULL;
+    saved_error error = {NULL, NULL, NULL};
+    int status;
+    (void)self;
+    if (!PyArg_ParseTuple(args, "O!OO!", &PyTuple_Type, &argv_tuple, &filters_obj,
+                          &PyTuple_Type, &fns)
+        || bytes_or_none(filters_obj, &fjson, &fjson_len) < 0)
+        return NULL;
+    argc = PyTuple_Size(argv_tuple);
+    argv = (const char **)calloc((size_t)argc + 1, sizeof(char *));
+    if (argv == NULL)
+        return PyErr_NoMemory();
+    for (i = 0; i < argc; i++) {
+        PyObject *item = PyTuple_GetItem(argv_tuple, i);
+        char *s;
+        Py_ssize_t len;
+        if (item == NULL || PyBytes_AsStringAndSize(item, &s, &len) < 0)
+            goto done;
+        argv[i] = s;
+    }
+    if (make_filters(fns, &error, &filters, &data, &n) == 0) {
+        Py_BEGIN_ALLOW_THREADS
+        status = pandoc_main((int)argc, argv, fjson, (size_t)fjson_len, filters, (size_t)n);
+        Py_END_ALLOW_THREADS
+        if (error.type != NULL)
+            PyErr_Restore(error.type, error.value, error.traceback);
+        else
+            result = PyLong_FromLong(status);
+    }
+done:
+    free(argv);
+    free(filters);
+    free(data);
+    return result;
+}
+
 /* read_many(request: bytes) */
 static PyObject *
 core_read_many(PyObject *self, PyObject *args)
@@ -337,6 +385,8 @@ static PyMethodDef core_methods[] = {
      "convert_filters(options: bytes, input: bytes | None, filters: tuple[Callable[[bytes, bytes], bytes], ...]) -> (status, output, error_kind, error_message, log)"},
     {"convert_args_filters", core_convert_args_filters, METH_VARARGS,
      "convert_args_filters(args: tuple[bytes, ...], input: bytes | None, filters: tuple[Callable[[bytes, bytes], bytes], ...]) -> (status, output, error_kind, error_message, log)"},
+    {"main", core_main, METH_VARARGS,
+     "main(argv: tuple[bytes, ...], filters: bytes | None, callbacks: tuple[...]) -> int: the pandoc command"},
     {"read_many", core_read_many, METH_VARARGS,
      "read_many(request: bytes) -> (status, output, error_kind, error_message, log)"},
     {"query", core_query, METH_VARARGS,

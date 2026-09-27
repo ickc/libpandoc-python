@@ -19,7 +19,7 @@ classifiers = [
 ]
 
 [project.scripts]
-pandocpy = "libpandoc.cli:main"
+pandocpy = "libpandoc.cli:run_main"
 
 [project.urls]
 Repository = "https://github.com/ickc/libpandoc-python"
