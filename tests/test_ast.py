@@ -174,9 +174,9 @@ def test_a_python_filter_runs_on_the_calling_thread():
     assert threads == [threading.get_ident()]
 
 
-def test_ctx_read_uses_the_reader_pandoc_decided_on(tmp_path):
+def test_reading_like_the_conversion_uses_the_reader_pandoc_decided_on(tmp_path):
     """The context knows the input format (from the file name here), and
-    ctx.read parses fragments with it."""
+    read(text, ctx.conversion) parses fragments with it."""
     src = tmp_path / "in.rst"
     src.write_text(".. code::\n\n   *emph* and ``code``\n")
     seen = []
@@ -185,7 +185,7 @@ def test_ctx_read_uses_the_reader_pandoc_decided_on(tmp_path):
     @f.on(pandom.CodeBlock)
     def cell(code, ctx):
         seen.append((ctx.conversion.input_format, ctx.conversion.output_format, ctx.format))
-        return ctx.read(code.text)
+        return pandoc.read(code.text, ctx.conversion).blocks
 
     out = pandoc.convert(options={"input-files": [str(src)], "to": "html5+smart"}, filters=[f])
     assert seen == [("rst", "html5+smart", "html5")]
@@ -202,3 +202,44 @@ def test_a_function_filter_may_take_the_conversion():
 def test_a_filter_must_return_a_document():
     with pytest.raises(TypeError, match="not a Pandoc"):
         pandoc.convert("hi", to="html", filters=[lambda doc: 42])
+
+
+def test_read_many():
+    docs = pandoc.read_many(["*a*", "~~b~~", ""], "commonmark_x")
+    assert [d.blocks for d in docs] == [
+        [pandom.Para(pandom.Emph("a"))],
+        [pandom.Para(pandom.Strikeout("b"))],
+        [],
+    ]
+
+
+def test_read_many_reads_each_on_its_own():
+    """Unlike joining the texts into one document: a reference defined in
+    one text doesn't resolve a link in another."""
+    docs = pandoc.read_many(["[x]\n\n[x]: /url", "[x]"])
+    assert isinstance(docs[0].blocks[0].content[0], pandom.Link)
+    assert not isinstance(docs[1].blocks[0].content[0], pandom.Link)
+
+
+def test_read_many_like_a_conversion():
+    conv = pandom.Conversion("html", input_format="markdown-smart", options={"tab-stop": 2})
+    assert pandoc.read_options(conv) == {"from": "markdown-smart", "tab-stop": 2}
+    (doc,) = pandoc.read_many(["'q'"], conv)
+    assert pandom.stringify(doc) == "'q'"  # -smart: no curly quotes
+
+
+def test_read_many_errors_name_the_input():
+    with pytest.raises(pandoc.PandocError, match="Unknown input format"):
+        pandoc.read_many(["x"], "nonesuch")
+
+
+def test_read_many_in_a_filter():
+    f = pandom.Filter()
+
+    @f.on(pandom.CodeBlock)
+    def cells(code, ctx):
+        docs = pandoc.read_many(code.text.splitlines(), ctx.conversion)
+        return [b for d in docs for b in d.blocks]
+
+    out = pandoc.convert("```\n*a*\n~~b~~\n```\n", from_="commonmark_x", to="html", filters=[f])
+    assert out == "<p><em>a</em></p>\n<p><del>b</del></p>\n"

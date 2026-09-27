@@ -303,6 +303,24 @@ core_query(PyObject *self, PyObject *args)
     return unpack(r);
 }
 
+/* read_many(request: bytes) */
+static PyObject *
+core_read_many(PyObject *self, PyObject *args)
+{
+    PyObject *q_obj;
+    const char *q;
+    Py_ssize_t q_len;
+    pandoc_result *r;
+    (void)self;
+    if (!PyArg_ParseTuple(args, "O!", &PyBytes_Type, &q_obj)
+        || bytes_or_none(q_obj, &q, &q_len) < 0)
+        return NULL;
+    Py_BEGIN_ALLOW_THREADS
+    r = pandoc_read_many(q, (size_t)q_len);
+    Py_END_ALLOW_THREADS
+    return unpack(r);
+}
+
 static PyObject *
 core_abi_version(PyObject *self, PyObject *noargs)
 {
@@ -319,6 +337,8 @@ static PyMethodDef core_methods[] = {
      "convert_filters(options: bytes, input: bytes | None, filters: tuple[Callable[[bytes, bytes], bytes], ...]) -> (status, output, error_kind, error_message, log)"},
     {"convert_args_filters", core_convert_args_filters, METH_VARARGS,
      "convert_args_filters(args: tuple[bytes, ...], input: bytes | None, filters: tuple[Callable[[bytes, bytes], bytes], ...]) -> (status, output, error_kind, error_message, log)"},
+    {"read_many", core_read_many, METH_VARARGS,
+     "read_many(request: bytes) -> (status, output, error_kind, error_message, log)"},
     {"query", core_query, METH_VARARGS,
      "query(query: bytes) -> (status, output, error_kind, error_message, log)"},
     {"abi_version", core_abi_version, METH_NOARGS,

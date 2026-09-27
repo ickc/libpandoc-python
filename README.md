@@ -33,9 +33,8 @@ pandoc.write(f(doc), "plain")
   constructor (`"PandocParseError"`, ...). **Warnings** are issued as
   `PandocWarning`.
 - **Threads:** the GIL is released while pandoc runs, so conversions in
-  different threads run in parallel, up to 8 at once (libpandoc's Haskell
-  runtime uses up to 8 cores): 400 small conversions take 31 ms on 8
-  threads, 143 ms on one.
+  different threads run in parallel, on all cores: 2000 small conversions
+  run 6.6 times as fast on 8 threads as on one, 8.5 times on 32.
 - **Filters**: `filters=` takes pandoc's (Lua or JSON filter paths,
   `"citeproc"`) and Python ones, mixed, in order. A Python filter is a
   [pandom](https://github.com/ickc/pandom) `Filter`, or a function that
@@ -45,6 +44,24 @@ pandoc.write(f(doc), "plain")
   in a docx) reaches the writer, and a filter's exception is raised from
   `convert` as it is. A filter may call pandoc itself (`convert`, or
   `ctx.read(text)` to parse a fragment the way the document was read).
+
+## Reading fragments, from filters
+
+`read_many` parses many texts at once, each on its own, on all cores: for
+filters that parse fragments such as table cells (2000 cells: 107 ms, against
+725 ms for a `read` each, and 184 ms for joining them into one document,
+which also lets the cells affect each other). Given the conversion a filter
+runs in, it reads them the way that conversion reads its input:
+
+```python
+@f.on(CodeBlock)
+def cells(code, ctx):
+    docs = pandoc.read_many(code.text.splitlines(), ctx.conversion)
+    return [b for d in docs for b in d.blocks]
+```
+
+`read(text, ctx.conversion)` does the same for one text, and
+`read_options(conversion)` gives the options used.
 
 ## pandocpy
 

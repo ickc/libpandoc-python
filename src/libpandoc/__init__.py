@@ -23,11 +23,11 @@ import json
 import logging
 import os
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 import pandom
-from pandom import Filter, Pandoc
+from pandom import Conversion, Filter, Pandoc
 
 from . import _core
 
@@ -43,6 +43,8 @@ __all__ = [
     "pandoc_version",
     "query",
     "read",
+    "read_many",
+    "read_options",
     "run",
     "write",
 ]
@@ -237,7 +239,7 @@ def _callback(group: tuple[Any, ...], opts: Mapping[str, Any]) -> Any:
     user_opts = {k: v for k, v in opts.items() if k != "filters"}
 
     def run(doc_json: bytes, context: bytes) -> bytes:
-        conversion = pandom.Conversion.from_context(json.loads(context), options=user_opts)
+        conversion = _conversion(json.loads(context), user_opts)
         doc = pandom.loads(doc_json)
         for f in group:
             if isinstance(f, Filter):
@@ -278,18 +280,102 @@ def run(args: Sequence[str], input: Source = None) -> bytes:
     return _check(*_core.convert_args(argv, _encode(input)))
 
 
-def read(source: Source = None, from_: str = "markdown", /,
+def read(source: Source = None, from_: str | Conversion = "markdown", /,
          options: Mapping[str, Any] | None = None, **kwargs: Any) -> Pandoc:
     """Parse ``source`` into a document (``pandom.Pandoc``).
 
-    Other options (``input_files``, reader extensions in ``from_``, Lua
-    ``filters``, ...) apply as in ``convert``.
+    ``from_`` is a format, or, in a filter, the conversion the filter runs
+    in (``ctx.conversion``): then ``source`` is read the way that
+    conversion reads its input, as with ``read_many``.
+
+    Otherwise other options (``input_files``, reader extensions in
+    ``from_``, Lua ``filters``, ...) apply as in ``convert``.
     """
+    if isinstance(from_, Conversion):
+        if not isinstance(source, (str, bytes)):
+            raise TypeError("read(source, conversion) takes the text to read")
+        text = source.decode("utf-8") if isinstance(source, bytes) else source
+        return read_many([text], from_, options, **kwargs)[0]
     opts = _options(options, kwargs)
     opts.update({"from": from_, "to": "json"})
     opts.pop("output-file", None)
     out = _check(*_core.convert(_dumps(opts), _encode(source)))
     return Pandoc.from_json(json.loads(out))
+
+
+def read_many(sources: Iterable[str], from_: str | Conversion = "markdown", /,
+              options: Mapping[str, Any] | None = None, **kwargs: Any) -> list[Pandoc]:
+    """Parse many texts, each on its own, in parallel: their documents.
+
+    For filters that parse many fragments, such as table cells: one call
+    into pandoc, which sets up the reader once and reads the texts on all
+    cores, much cheaper than a ``read`` each. ``from_`` is a format, or the
+    conversion a filter runs in (``ctx.conversion``), to read the way it
+    reads its input. Options that affect reading apply (``tab_stop``,
+    ``abbreviations``, ``resource_path``, ...).
+
+        docs = libpandoc.read_many(cells, ctx.conversion)
+    """
+    texts = [s if isinstance(s, str) else s.decode("utf-8") for s in sources]
+    opts = read_options(from_) if isinstance(from_, Conversion) else {"from": from_}
+    opts.update(_options(options, kwargs))
+    request = json.dumps({"options": opts, "inputs": texts}, ensure_ascii=False)
+    out = json.loads(_check(*_core.read_many(request.encode("utf-8"))))
+    docs = []
+    for i, j in enumerate(out):
+        if "error" in j:
+            e = j["error"]
+            raise PandocError(e["kind"], f"reading input {i}: {e['message']}")
+        docs.append(Pandoc.from_json(j))
+    return docs
+
+
+# The conversion's options that also apply to reading a fragment of it.
+_READ_OPTIONS = frozenset({
+    "abbreviations", "data-dir", "default-image-extension", "indented-code-classes",
+    "preserve-tabs", "resource-path", "sandbox", "strip-comments", "tab-stop",
+    "track-changes",
+})
+
+# Reader options (as pandoc gives filters) that have a defaults-file key.
+_READER_OPTIONS = ("default-image-extension", "indented-code-classes", "strip-comments",
+                   "tab-stop")
+_TRACK_CHANGES = {"accept-changes": "accept", "reject-changes": "reject", "all-changes": "all"}
+
+
+def read_options(conversion: Conversion, format: str | None = None) -> dict[str, Any]:
+    """Options (defaults-file keys) to read a fragment as ``conversion``
+    reads its input: its input format (or ``format``) and the options that
+    affect reading, not filters, templates, metadata or the output.
+
+    The input format is the one pandoc decided on when known, else the
+    options' ``from``, else markdown: pandoc doesn't yet tell JSON filters
+    it runs (jgm/pandoc#11016), though libpandoc does.
+    """
+    opts: dict[str, Any] = {}
+    if conversion.options is not None:
+        opts.update((k, v) for k, v in conversion.options.items() if k in _READ_OPTIONS)
+    elif conversion.reader_options is not None:
+        ro = conversion.reader_options
+        opts.update((k, ro[k]) for k in _READER_OPTIONS if k in ro)
+        tc = _TRACK_CHANGES.get(ro.get("track-changes", ""))
+        if tc:
+            opts["track-changes"] = tc
+    given = conversion.options or {}
+    opts["from"] = (format or conversion.input_format or given.get("from")
+                    or given.get("reader") or "markdown")
+    return opts
+
+
+def _conversion(context: Mapping[str, Any], options: Mapping[str, Any] | None) -> Conversion:
+    """The conversion libpandoc describes to an in-process filter."""
+    return Conversion(
+        context.get("format"),
+        input_format=context.get("input-format"),
+        output_format=context.get("output-format"),
+        reader_options=context.get("reader-options"),
+        options=options,
+    )
 
 
 def write(doc: Pandoc, to: str = "html", /,

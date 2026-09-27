@@ -68,6 +68,7 @@ def installed_filter(tmp_path):
     )
     (site / "cells_filter.py").write_text(textwrap.dedent("""\
         import os
+        import libpandoc
         from pandom import CodeBlock, Filter, Para, Str
 
         f = Filter()
@@ -76,7 +77,7 @@ def installed_filter(tmp_path):
         def cells(code, ctx):
             if "cells" in code.attr.classes:
                 seen = Para(Str(f"{ctx.conversion.input_format}|{os.getpid()}"))
-                return [*ctx.read(code.text), seen]
+                return [*libpandoc.read(code.text, ctx.conversion).blocks, seen]
         """))
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(site), *sys.path])}
     return env
