@@ -89,18 +89,21 @@ pandocpy -F other-filter input.md              # anything else: as pandoc does
 ```
 
 Python filter scripts (`-F foo.py`, panflute, pandocfilters, pandom or plain
-JSON) also run in pandocpy's process, as their own `__main__` with the
-document as their standard input, saving a Python start and its imports per
-filter (about 30 ms each). Either way they run with pandocpy's Python and
-packages. A script runs as a subprocess instead:
+JSON) also run in this process, as their own `__main__` with the document as
+their standard input, saving a Python start and its imports per filter
+(about 30 ms each). The same holds for `convert(filters=["foo.py"])`, from
+any number of threads: while scripts run, `sys.stdin`, `sys.stdout`,
+`sys.argv` and `os.environ` are each thread's script's own there, and the
+real ones elsewhere. Scripts run with this Python and its packages either
+way. A script runs as a subprocess instead:
 
 - if its author says so, with a line `# pandocpy: subprocess` near its top;
 - if the user says so: `PANDOCPY_SUBPROCESS=foo.py,bar` (paths, file names,
   names without `.py`, or `*` for all);
 - if it fails in process: it is run again as a subprocess, with a warning.
 
-`python -m libpandoc` is the same as `pandocpy`. Informational options (`--version`,
-`--list-*`, `-D`) are answered from libpandoc's queries.
+`python -m libpandoc` is the same as `pandocpy`, which is pandoc's command
+line exactly (pandoc's own command tests pass), `lua` and `server` aside.
 
 ## The AST
 
