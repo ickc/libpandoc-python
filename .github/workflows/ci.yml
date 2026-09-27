@@ -52,6 +52,10 @@ jobs:
         with:
           python-version: "3.14"
       - uses: actions/setup-python@v6
+        id: py314t
+        with:
+          python-version: "3.14t"
+      - uses: actions/setup-python@v6
         id: py310
         with:
           python-version: "3.10"
@@ -59,6 +63,7 @@ jobs:
         run: |
           echo "PY310=${{ steps.py310.outputs.python-path }}" >> "$GITHUB_ENV"
           echo "PY314=${{ steps.py314.outputs.python-path }}" >> "$GITHUB_ENV"
+          echo "PY314T=${{ steps.py314t.outputs.python-path }}" >> "$GITHUB_ENV"
 
       - name: MSVC import library
         if: runner.os == 'Windows'
@@ -72,13 +77,15 @@ jobs:
         if: runner.os == 'Linux'
         run: pipx run cibuildwheel==3.* --output-dir wheelhouse
 
-      - name: Build the abi3 wheel
+      - name: Build the abi3 and free-threaded wheels
         if: runner.os != 'Linux'
         env:
           LIBPANDOC_RPATH: "1"
         run: |
-          "$PY310" -m pip install build
-          "$PY310" -m build --wheel --outdir raw
+          for py in "$PY310" "$PY314T"; do
+            "$py" -m pip install build
+            "$py" -m build --wheel --outdir raw
+          done
           ls raw
 
       - name: Bundle libpandoc into the wheel
@@ -97,11 +104,13 @@ jobs:
       - name: Test the wheel
         run: |
           # outside the source tree, so that the installed package is tested
-          for py in "$PY310" "$PY314"; do
+          for py in "$PY310" "$PY314" "$PY314T"; do
             v=venv$(basename "$(dirname "$py")")-$RANDOM
             "$py" -m venv "$v"
             if [[ $RUNNER_OS == Windows ]]; then bin=Scripts; else bin=bin; fi
-            "$v/$bin/python" -m pip install "$PANDOM" wheelhouse/*.whl pytest panflute pandocfilters
+            "$v/$bin/python" -m pip install "$PANDOM" pytest panflute pandocfilters
+            # the abi3 wheel, or the free-threaded one
+            "$v/$bin/python" -m pip install --no-index --find-links wheelhouse libpandoc
             (cd tests && "../$v/$bin/python" -m pytest -v -p no:cacheprovider --rootdir=. .)
           done
 
@@ -109,7 +118,8 @@ jobs:
         if: matrix.subdir == 'linux-64'
         run: |
           python -m venv venv-conf
-          venv-conf/bin/python -m pip install "$PANDOM" wheelhouse/*.whl pytest
+          venv-conf/bin/python -m pip install "$PANDOM" pytest
+          venv-conf/bin/python -m pip install --no-index --find-links wheelhouse libpandoc
           v=$(venv-conf/bin/python -c "import libpandoc; print(libpandoc.pandoc_version())")
           # the pandoc command and source of the version libpandoc embeds
           curl -fsSL "https://github.com/jgm/pandoc/releases/download/$v/pandoc-$v-linux-amd64.tar.gz" | tar -xz

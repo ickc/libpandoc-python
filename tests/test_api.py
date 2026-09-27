@@ -1,5 +1,7 @@
 """The high-level API behaves like the pandoc CLI."""
 
+import sys
+import sysconfig
 import threading
 
 import pandom
@@ -11,6 +13,13 @@ import libpandoc as pandoc
 def test_versions():
     assert pandoc.pandoc_version().startswith("3.")
     assert pandoc.pandoc_api_version()[:2] == pandom.PANDOC_API_VERSION[:2]
+
+
+@pytest.mark.skipif(not sysconfig.get_config_var("Py_GIL_DISABLED"),
+                    reason="free-threaded CPython only")
+def test_free_threaded_python_stays_so():
+    """Importing libpandoc (and pandom) doesn't turn the GIL back on."""
+    assert not sys._is_gil_enabled()
 
 
 def test_convert_text():

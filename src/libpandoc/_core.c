@@ -2,8 +2,9 @@
  * libpandoc._core: the CPython binding to libpandoc's C ABI.
  *
  * Built against the limited API (abi3), so one wheel per platform serves
- * every CPython >= 3.10. The GIL is released while pandoc runs, so
- * conversions in different Python threads run in parallel.
+ * every CPython >= 3.10; free-threaded CPython (3.14t), which has no
+ * limited API, gets a wheel of its own. The GIL is released while pandoc
+ * runs, so conversions in different Python threads run in parallel.
  *
  * Copyright (C) 2026 Kolen Cheung
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -435,6 +436,14 @@ PyInit__core(void)
     m = PyModule_Create(&core_module);
     if (m == NULL)
         return NULL;
+#ifdef Py_GIL_DISABLED
+    /* Nothing here relies on the GIL: each call's state is its own, and
+     * the arguments pandoc reads are immutable bytes and tuples. */
+    if (PyUnstable_Module_SetGIL(m, Py_MOD_GIL_NOT_USED) < 0) {
+        Py_DECREF(m);
+        return NULL;
+    }
+#endif
     if (PyModule_AddIntConstant(m, "ABI_VERSION", LIBPANDOC_ABI_VERSION) < 0) {
         Py_DECREF(m);
         return NULL;
