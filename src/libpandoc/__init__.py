@@ -22,6 +22,7 @@ import inspect
 import json
 import logging
 import os
+import sys
 import warnings
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
@@ -29,7 +30,10 @@ from typing import Any
 import panir
 from panir import Conversion, Filter, Pandoc
 
-from . import _core
+if sys.platform == "emscripten":  # Pyodide: libpandoc.wasm
+    from . import _wasm as _core
+else:
+    from . import _core
 
 __all__ = [
     "PandocError",
