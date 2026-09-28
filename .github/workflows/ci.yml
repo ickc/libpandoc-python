@@ -133,3 +133,35 @@ jobs:
         with:
           name: wheel-${{ matrix.subdir }}
           path: wheelhouse/*.whl
+
+  # The Pyodide backend (_wasm), on libpandoc.wasm from the same libpandoc
+  # release, with libpandoc's JavaScript hosts: the API and AST tests but
+  # the three that need threads
+  pyodide:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          # GHC's wasm needs a recent V8
+          node-version: 26
+      - name: libpandoc.wasm and libpandoc's hosts
+        run: |
+          gh release download "$LIBPANDOC_RELEASE" -R "$LIBPANDOC_REPO" -p libpandoc.wasm -D "$RUNNER_TEMP"
+          git clone --depth 1 "https://github.com/$LIBPANDOC_REPO" "$RUNNER_TEMP/libpandoc"
+          (cd "$RUNNER_TEMP/libpandoc/wasm" && npm ci)
+      - name: Pyodide and panir
+        run: |
+          mkdir -p "$RUNNER_TEMP/pyodide" && cd "$RUNNER_TEMP/pyodide"
+          npm init -y >/dev/null && npm install pyodide@314.0.7
+          python3 -m pip wheel --no-deps -w wheels "$PANIR"
+      - name: Test
+        run: |
+          SHIM=1 LIBPANDOC_WASM="$RUNNER_TEMP/libpandoc.wasm" PYODIDE="$RUNNER_TEMP/pyodide" \
+            PANIR_WHEEL=$(ls "$RUNNER_TEMP"/pyodide/wheels/panir-*.whl) LIBPANDOC_PYTHON="$GITHUB_WORKSPACE" \
+            node "$RUNNER_TEMP/libpandoc/wasm/test-pyodide-suite.mjs" tests/test_api.py tests/test_ast.py \
+            --deselect tests/test_api.py::test_threads \
+            --deselect tests/test_api.py::test_num_threads \
+            --deselect tests/test_api.py::test_num_threads_from_the_environment
