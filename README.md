@@ -127,6 +127,26 @@ or a staged `dist/` prefix):
 LIBPANDOC_PREFIX=/path/to/prefix pip install .
 ```
 
+### In the browser (Pyodide): a prototype
+
+On Pyodide, the package runs pandoc as libpandoc.wasm, which the browser's
+engine runs (libpandoc's `wasm/`), instead of the native library: the same
+API, Python filters included. The host loads libpandoc.wasm and registers
+it before `import libpandoc`; how the package will load it itself is to be
+decided with its packaging.
+
+```js
+import { load } from "libpandoc/wasm/browser.mjs";
+import { emscriptenDirectory } from "libpandoc/wasm/emscripten-fs.mjs";
+const pandoc = await load(wasmUrl, { tmp: emscriptenDirectory(pyodide.FS, "/tmp") });
+pyodide.registerJsModule("libpandoc_wasm", pandoc.abi);
+await pyodide.runPythonAsync("import libpandoc; print(libpandoc.convert('*hi*', to='html'))");
+```
+
+46 of the 49 API and AST tests pass there; the other 3 need threads, which
+wasm doesn't have. It needs a browser with wasm's exnref exception
+handling (Chromium 138, Firefox 132, Safari 18.2 or later).
+
 ## Performance
 
 `bench/roundtrip.py`, on pandoc's test suite repeated 50 times (0.46 MB of
