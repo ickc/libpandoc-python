@@ -26,10 +26,19 @@ def find_prefix() -> Path:
 
 
 prefix = find_prefix()
-runtime_dirs = []
-if os.environ.get("LIBPANDOC_RPATH") and sys.platform != "win32":
-    # for development against an uninstalled libpandoc
-    runtime_dirs = [str(prefix / "lib")]
+# Where the extension finds libpandoc at run time, as libpandoc-rs's
+# build script decides: $LIBPANDOC_RPATH if set ("$ORIGIN/..." relative to
+# the extension; empty: none, for a wheel whose repair tool bundles the
+# library), else the directory it was found in. Conda builds need nothing:
+# rattler-build makes RPATHs into $PREFIX relative.
+rpath = os.environ.get("LIBPANDOC_RPATH")
+if rpath is None or rpath == "1":  # "1": what this variable used to take
+    rpath = str(prefix / "lib")
+elif sys.platform == "darwin":
+    rpath = rpath.replace("$ORIGIN", "@loader_path")
+runtime_dirs = [rpath] if rpath and sys.platform.startswith("linux") else []
+# (setuptools gives macOS -L, not an rpath, for runtime_library_dirs)
+link_args = [f"-Wl,-rpath,{rpath}"] if rpath and sys.platform == "darwin" else []
 abi3 = not sysconfig.get_config_var("Py_GIL_DISABLED")
 
 setup(
@@ -41,6 +50,7 @@ setup(
             library_dirs=[str(prefix / "lib")],
             libraries=["pandoc"],
             runtime_library_dirs=runtime_dirs,
+            extra_link_args=link_args,
             define_macros=[("Py_LIMITED_API", "0x030A0000")] if abi3 else [],
             py_limited_api=abi3,
         )

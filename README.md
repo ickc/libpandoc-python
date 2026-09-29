@@ -127,6 +127,11 @@ or a staged `dist/` prefix):
 LIBPANDOC_PREFIX=/path/to/prefix pip install .
 ```
 
+The extension then finds the library in that prefix when it runs (an
+RPATH). `LIBPANDOC_RPATH` sets another, e.g. `$ORIGIN/...` relative to the
+extension, or empty for none (a wheel whose repair tool bundles the
+library). libpandoc-rs reads both variables the same way.
+
 ### In the browser (Pyodide): a prototype
 
 On Pyodide, the package runs pandoc as libpandoc.wasm, which the browser's
