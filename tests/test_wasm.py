@@ -151,7 +151,7 @@ def test_pandocpy_runs_wasm_filters(tmp_path, capfd):
     doc.write_text("hi")
     status = cli.main(["-t", "plain", "-F", str(Path(WASM) / "upper.wasm"), str(doc)])
     assert status == 0
-    assert capfd.readouterr().out == "HI\n"
+    assert capfd.readouterr().out.splitlines() == ["HI"]  # CRLF on Windows, as pandoc
     status = cli.main(["-t", "plain", "-F", "nonesuch.wasm", str(doc)])
     assert status == cli.FILTER_FAILED
     assert "nonesuch.wasm not found" in capfd.readouterr().err
