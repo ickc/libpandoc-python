@@ -179,7 +179,10 @@ await pyodide.runPythonAsync("import libpandoc; print(libpandoc.convert('*hi*', 
 ```
 
 46 of the 49 API and AST tests pass there; the other 3 need threads, which
-wasm doesn't have. It needs a browser with wasm's exnref exception
+wasm doesn't have. A document too large for wasm32's 4 GiB (about 80 MB of
+markdown) stops the libpandoc.wasm instance for good: calls then raise a
+`JsException` named `StoppedError` (libpandoc's `wasm/README.md`, "When an
+instance stops"); for now, restart Pyodide. It needs a browser with wasm's exnref exception
 handling (Chromium 138, Firefox 132, Safari 18.2 or later).
 
 ## Performance
