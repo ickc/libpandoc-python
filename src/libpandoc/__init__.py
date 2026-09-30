@@ -148,7 +148,7 @@ def set_num_threads(n: int) -> int:
 
 @functools.cache
 def pandoc_version() -> str:
-    """The version of the pandoc library in use, e.g. ``"3.11"``."""
+    """The version of the pandoc library in use, e.g. ``"3.12"``."""
     return query("version")
 
 
