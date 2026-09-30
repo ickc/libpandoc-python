@@ -144,13 +144,15 @@ def test_limits_are_read_as_pandoc_writes_them():
 
 
 @needs_filters
-def test_pandocpy_runs_wasm_filters(capfd):
+def test_pandocpy_runs_wasm_filters(tmp_path, capfd):
     from libpandoc import cli
 
-    src = Path(WASM)
-    status = cli.main(["-t", "plain", "-F", str(src / "upper.wasm"), os.devnull])
+    doc = tmp_path / "in.md"
+    doc.write_text("hi")
+    status = cli.main(["-t", "plain", "-F", str(Path(WASM) / "upper.wasm"), str(doc)])
     assert status == 0
-    status = cli.main(["-t", "plain", "-F", "nonesuch.wasm", os.devnull])
+    assert capfd.readouterr().out == "HI\n"
+    status = cli.main(["-t", "plain", "-F", "nonesuch.wasm", str(doc)])
     assert status == cli.FILTER_FAILED
     assert "nonesuch.wasm not found" in capfd.readouterr().err
 
