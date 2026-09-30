@@ -102,12 +102,15 @@ jobs:
           ls -la wheelhouse
 
       # libpandoc-rs's example filters built for wasm, for the wasm filter tests
+      # (in pwsh: in bash on Windows, Git's /usr/bin/link shadows MSVC's for build scripts)
       - name: Wasm filters
+        shell: pwsh
         run: |
           rustup target add wasm32-wasip1
-          git clone --depth 1 https://github.com/ickc/libpandoc-rs "$RUNNER_TEMP/libpandoc-rs"
-          (cd "$RUNNER_TEMP/libpandoc-rs/filters" && cargo build --release --target wasm32-wasip1 --quiet)
-          echo "LIBPANDOC_WASM_FILTERS=$RUNNER_TEMP/libpandoc-rs/filters/target/wasm32-wasip1/release" >> "$GITHUB_ENV"
+          git clone --depth 1 https://github.com/ickc/libpandoc-rs "$env:RUNNER_TEMP/libpandoc-rs"
+          cargo build --release --target wasm32-wasip1 --quiet --manifest-path "$env:RUNNER_TEMP/libpandoc-rs/filters/Cargo.toml"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "LIBPANDOC_WASM_FILTERS=$env:RUNNER_TEMP/libpandoc-rs/filters/target/wasm32-wasip1/release" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
       - name: Test the wheel
         run: |
