@@ -10,6 +10,7 @@ setuptools = ">=77"
 wheel = "*"
 pytest = "*"
 ruff = "*"
+wasmtime-py = ">=49.0.0,<50"
 
 [tasks]
 # panir from a checkout next to this one (as in project-libpandoc)

@@ -101,6 +101,14 @@ jobs:
           esac
           ls -la wheelhouse
 
+      # libpandoc-rs's example filters built for wasm, for the wasm filter tests
+      - name: Wasm filters
+        run: |
+          rustup target add wasm32-wasip1
+          git clone --depth 1 https://github.com/ickc/libpandoc-rs "$RUNNER_TEMP/libpandoc-rs"
+          (cd "$RUNNER_TEMP/libpandoc-rs/filters" && cargo build --release --target wasm32-wasip1 --quiet)
+          echo "LIBPANDOC_WASM_FILTERS=$RUNNER_TEMP/libpandoc-rs/filters/target/wasm32-wasip1/release" >> "$GITHUB_ENV"
+
       - name: Test the wheel
         run: |
           # outside the source tree, so that the installed package is tested
@@ -108,7 +116,7 @@ jobs:
             v=venv$(basename "$(dirname "$py")")-$RANDOM
             "$py" -m venv "$v"
             if [[ $RUNNER_OS == Windows ]]; then bin=Scripts; else bin=bin; fi
-            "$v/$bin/python" -m pip install "$PANIR" pytest panflute pandocfilters
+            "$v/$bin/python" -m pip install "$PANIR" pytest panflute pandocfilters wasmtime
             # the abi3 wheel, or the free-threaded one
             "$v/$bin/python" -m pip install --no-index --find-links wheelhouse libpandoc
             (cd tests && "../$v/$bin/python" -m pytest -v -p no:cacheprovider --rootdir=. .)

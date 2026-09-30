@@ -49,6 +49,32 @@ pandoc.write(f(doc), "plain")
   `convert` as it is. A filter may call pandoc itself (`convert`, or
   `ctx.read(text)` to parse a fragment the way the document was read).
 
+## Wasm filters
+
+`filters=["foo.wasm"]` (or `WasmFilter(path)`), and `pandocpy -F
+foo.wasm`, run a filter compiled to WebAssembly in this process, with
+wasmtime (`pip install libpandoc[wasm]`): a pandoc JSON filter built for
+WASI (`wasm32-wasip1`), such as any [panir](https://github.com/ickc/panir)
+Rust filter; see [libpandoc-rs](https://github.com/ickc/libpandoc-rs). The
+same file runs in pandocrs, pandocjl and libpandoc.wasm (browsers
+included), and under pandoc itself through a wrapper.
+
+It runs sandboxed, whatever pandoc's options. Python, Lua and JSON filters
+can do anything you can (pandoc's `--sandbox` limits readers and writers,
+not filters); a wasm filter can't:
+
+- **files:** it sees the current directory, read-only (`dirs=`,
+  `writable=` for others); no network, no programs;
+- **calls to pandoc** (libpandoc-rs's `libpandoc` crate, built for wasm):
+  in pandoc's sandbox, with no options that read or write files, fetch or
+  run anything (libpandoc checks them: `"untrusted"`, 1.7);
+- **time and memory**, which pandoc limits for no filter:
+  `$LIBPANDOC_WASM_TIMEOUT` (seconds, as pandoc-server's `--timeout`; its
+  calls to pandoc included) and `$LIBPANDOC_WASM_MAX_MEMORY` (bytes, or with
+  `k`, `m`, `g`, as pandoc's `+RTS -M`) stop a filter past them, with a
+  `WasmFilterError`; none by default, as pandoc. `WasmFilter(path,
+  timeout=, max_memory=)` for one filter (0: none).
+
 ## Reading fragments, from filters
 
 `read_many` parses many texts at once, each on its own, in parallel: for

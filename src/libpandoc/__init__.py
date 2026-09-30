@@ -34,10 +34,12 @@ if sys.platform == "emscripten":  # Pyodide: libpandoc.wasm
     from . import _wasm as _core
 else:
     from . import _core
+from ._wasmfilter import WasmFilter
 
 __all__ = [
     "PandocError",
     "PandocWarning",
+    "WasmFilter",
     "convert",
     "default_template",
     "extensions",
@@ -227,17 +229,21 @@ def convert(
 
 
 def _is_python_filter(f: Any) -> bool:
-    return isinstance(f, Filter) or callable(f)
+    return isinstance(f, Filter) or (callable(f) and not isinstance(f, WasmFilter))
 
 
 def _callbacks(
-    filters: Sequence[Any], opts: Mapping[str, Any] | None
+    filters: Sequence[Any], opts: Mapping[str, Any] | None, args: Sequence[str] = ()
 ) -> tuple[tuple[Any, ...], list[Any]]:
     """Python filters as libpandoc callbacks, and the filters list referring
     to them by index. Consecutive Python objects (Filters, functions) share
     one callback (one JSON round trip). Python filter scripts (a JSON
     filter's path, ``.py`` or a Python ``#!``) run in this process, each its
-    own callback, unless opted out (see ``libpandoc._scripts``)."""
+    own callback, unless opted out (see ``libpandoc._scripts``). Wasm
+    filters (``WasmFilter``, or a JSON filter's path ending in ``.wasm``)
+    run in this process too, each its own callback; ``args``, the command
+    line if any, may name the user data directory where they are looked
+    for, as pandoc does."""
     from . import _scripts
 
     callbacks: list[Any] = []
@@ -256,7 +262,16 @@ def _callbacks(
             continue
         flush()
         path = _json_filter_path(f)
-        if path is not None and _scripts.is_python_script(path):
+        if isinstance(f, WasmFilter):
+            entries.append({"type": "callback", "index": len(callbacks)})
+            callbacks.append(f)
+        elif path is not None and path.lower().endswith(".wasm"):
+            found = _find_filter(path, opts, args)
+            if found is None:
+                raise FileNotFoundError(f"wasm filter {path} not found")
+            entries.append({"type": "callback", "index": len(callbacks)})
+            callbacks.append(_wasm_filter(found))
+        elif path is not None and _scripts.is_python_script(path):
             entries.append({"type": "callback", "index": len(callbacks)})
             callbacks.append(_scripts.callback(
                 path, pandoc_version(), _conversion, options=opts,
@@ -266,6 +281,44 @@ def _callbacks(
             entries.append(f)
     flush()
     return tuple(callbacks), entries
+
+
+def _find_filter(path: str, opts: Mapping[str, Any] | None, args: Sequence[str]) -> str | None:
+    """A filter's file as pandoc finds one: as given, else in the user data
+    directory's ``filters/``."""
+    if os.path.isfile(path):
+        return path
+    data_dir = _data_dir(opts, args)
+    found = None if data_dir is None else os.path.join(data_dir, "filters", path)
+    return found if found is not None and os.path.isfile(found) else None
+
+
+def _data_dir(opts: Mapping[str, Any] | None, args: Sequence[str]) -> str | None:
+    """pandoc's user data directory: ``--data-dir`` (or the option), else
+    ``$XDG_DATA_HOME/pandoc`` if it exists, else ``~/.pandoc``."""
+    if opts is not None and "data-dir" in opts:
+        return os.fspath(opts["data-dir"])
+    for i, a in enumerate(args):
+        if a.startswith("--data-dir="):
+            return a[len("--data-dir="):]
+        if a == "--data-dir" and i + 1 < len(args):
+            return args[i + 1]
+    xdg = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    xdg = os.path.join(xdg, "pandoc")
+    return xdg if os.path.isdir(xdg) else os.path.expanduser("~/.pandoc")
+
+
+_WASM_FILTERS: dict[str, tuple[float, WasmFilter]] = {}
+
+
+def _wasm_filter(path: str) -> WasmFilter:
+    """A wasm filter by path, compiled once per process (again if the file
+    changes)."""
+    key, mtime = os.path.abspath(path), os.path.getmtime(path)
+    cached = _WASM_FILTERS.get(key)
+    if cached is None or cached[0] != mtime:
+        cached = _WASM_FILTERS[key] = (mtime, WasmFilter(path))
+    return cached[1]
 
 
 def _json_filter_path(f: Any) -> str | None:
