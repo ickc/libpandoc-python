@@ -39,6 +39,10 @@ pandoc.write(f(doc), "plain")
   and change it. 2000 small conversions from a pool of Python threads run
   5 times as fast on 16 threads as on one; on a 16-core, 32-thread CPU, 16
   was as fast as 32.
+- **Untrusted input:** `untrusted=True` accepts only options that read no
+  files, write none, fetch nothing and run nothing, with pandoc's sandbox
+  on (libpandoc's list; anything else raises a `PandocError` naming it):
+  for documents or options from someone you don't trust.
 - **Filters**: `filters=` takes pandoc's (Lua or JSON filter paths,
   `"citeproc"`) and Python ones, mixed, in order. A Python filter is a
   [panir](https://github.com/ickc/panir) `Filter`, or a function that
