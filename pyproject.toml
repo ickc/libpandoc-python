@@ -34,17 +34,24 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
-# Linux wheels: built and repaired in the manylinux_2_28 container, against
-# the libpandoc staged in ./libpandoc (CI fetches it). One abi3 build serves
-# every Python with a GIL, and one more free-threaded CPython 3.14t; CI tests
-# the wheels themselves afterwards.
+# Linux wheels: built and repaired in the manylinux_2_28 container against
+# the libpandoc staged in ./libpandoc, and in the musllinux_1_2 one against
+# libpandoc's musl build in ./libpandoc-musl (CI fetches both). One abi3
+# build serves every Python with a GIL, and one more free-threaded CPython
+# 3.14t; CI tests the wheels themselves afterwards.
 [tool.cibuildwheel]
 build = "cp310-* cp314t-*"
-skip = "*-musllinux_*"
 test-skip = "*"
 
 [tool.cibuildwheel.linux]
 manylinux-x86_64-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"
+musllinux-x86_64-image = "musllinux_1_2"
+musllinux-aarch64-image = "musllinux_1_2"
 environment = { LIBPANDOC_PREFIX = "/project/libpandoc", LIBPANDOC_RPATH = "1" }
 repair-wheel-command = "LD_LIBRARY_PATH=/project/libpandoc/lib auditwheel repair --plat manylinux_2_28_$(uname -m) -w {dest_dir} {wheel}"
+
+[[tool.cibuildwheel.overrides]]
+select = "*-musllinux_*"
+environment = { LIBPANDOC_PREFIX = "/project/libpandoc-musl", LIBPANDOC_RPATH = "1" }
+repair-wheel-command = "LD_LIBRARY_PATH=/project/libpandoc-musl/lib auditwheel repair --plat musllinux_1_2_$(uname -m) -w {dest_dir} {wheel}"

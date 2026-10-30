@@ -46,6 +46,11 @@ jobs:
           gh release download "$LIBPANDOC_RELEASE" -R "$LIBPANDOC_REPO" -p "libpandoc-${{ matrix.subdir }}.tar.gz"
           mkdir libpandoc && tar -xzf "libpandoc-${{ matrix.subdir }}.tar.gz" -C libpandoc
           echo "LIBPANDOC_PREFIX=$PWD/libpandoc" >> "$GITHUB_ENV"
+          # and musl's, for the musllinux wheels
+          if [[ $RUNNER_OS == Linux ]]; then
+            gh release download "$LIBPANDOC_RELEASE" -R "$LIBPANDOC_REPO" -p "libpandoc-${{ matrix.subdir }}-musl.tar.gz"
+            mkdir libpandoc-musl && tar -xzf "libpandoc-${{ matrix.subdir }}-musl.tar.gz" -C libpandoc-musl
+          fi
 
       - uses: actions/setup-python@v6
         id: py314
@@ -124,6 +129,20 @@ jobs:
             "$v/$bin/python" -m pip install --no-index --find-links wheelhouse libpandoc
             (cd tests && "../$v/$bin/python" -m pytest -v -p no:cacheprovider --rootdir=. .)
           done
+
+      # in the musllinux image, whose Pythons are musl's: abi3 on 3.14, and 3.14t
+      - name: Test the musllinux wheels
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD:/project" -w /project -e PANIR \
+            "quay.io/pypa/musllinux_1_2_$(uname -m)" bash -c '
+              set -e
+              for py in cp314-cp314 cp314-cp314t; do
+                /opt/python/$py/bin/python -m venv /tmp/v-$py
+                /tmp/v-$py/bin/pip install -q "$PANIR" pytest panflute pandocfilters
+                /tmp/v-$py/bin/pip install -q --no-index --find-links wheelhouse libpandoc
+                (cd tests && /tmp/v-$py/bin/python -m pytest -q -p no:cacheprovider --rootdir=. .)
+              done'
 
       - name: Same as the pandoc command (pandoc's own command tests)
         if: matrix.subdir == 'linux-64'
