@@ -44,6 +44,7 @@ __all__ = [
     "default_template",
     "extensions",
     "input_formats",
+    "load",
     "num_threads",
     "output_formats",
     "pandoc_api_version",
@@ -493,4 +494,15 @@ def _check_versions() -> None:
         )
 
 
-_check_versions()
+async def load(source: str | bytes | None = None) -> None:
+    """In Pyodide, load libpandoc.wasm before the first call: from
+    ``source`` (a URL, or the module's bytes), else from the wheel.
+    Elsewhere, nothing to do: pandoc is loaded with the package."""
+    if sys.platform == "emscripten":
+        await _core.load(source)
+        _check_versions()
+
+
+# in Pyodide, once libpandoc.wasm is loaded (load(), or the host before import)
+if sys.platform != "emscripten" or _core.loaded():
+    _check_versions()

@@ -162,13 +162,26 @@ RPATH). `LIBPANDOC_RPATH` sets another, e.g. `$ORIGIN/...` relative to the
 extension, or empty for none (a wheel whose repair tool bundles the
 library). libpandoc-rs reads both variables the same way.
 
-### In the browser (Pyodide): a prototype
+### In the browser (Pyodide)
 
 On Pyodide, the package runs pandoc as libpandoc.wasm, which the browser's
 engine runs (libpandoc's `wasm/`), instead of the native library: the same
-API, Python filters included. The host loads libpandoc.wasm and registers
-it before `import libpandoc`; how the package will load it itself is to be
-decided with its packaging.
+API, Python filters included. Its wheel for Pyodide
+(`py3-none-pyemscripten_2026_0_wasm32`, built by `scripts/pyodide-wheel.sh`
+from a libpandoc release's `libpandoc.wasm` and `libpandoc-pyodide.mjs`)
+carries the module; load it once before the first call:
+
+```python
+import micropip
+await micropip.install("libpandoc")
+import libpandoc
+await libpandoc.load()            # from the wheel; or load(url), load(bytes)
+libpandoc.convert("*hi*", to="html")
+```
+
+Pyodide's filesystem is pandoc's. Give paths as absolute ones: pandoc's
+working directory is `/`, whatever `os.chdir` says. A host may instead
+load libpandoc.wasm itself and register it before `import libpandoc`:
 
 ```js
 import { load } from "libpandoc/wasm/browser.mjs";
@@ -178,7 +191,7 @@ pyodide.registerJsModule("libpandoc_wasm", pandoc.abi);
 await pyodide.runPythonAsync("import libpandoc; print(libpandoc.convert('*hi*', to='html'))");
 ```
 
-46 of the 49 API and AST tests pass there; the other 3 need threads, which
+The API and AST tests pass there but the 3 that need threads, which
 wasm doesn't have. A document too large for wasm32's 4 GiB (about 80 MB of
 markdown) stops the libpandoc.wasm instance for good: calls then raise a
 `JsException` named `StoppedError` (libpandoc's `wasm/README.md`, "When an

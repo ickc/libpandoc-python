@@ -4,6 +4,9 @@ libpandoc (include/libpandoc.h and the shared library) is looked for in
 $LIBPANDOC_PREFIX, then $CONDA_PREFIX / $PREFIX (conda builds), then
 sys.prefix. The extension uses the limited API, so the wheel is abi3,
 except on free-threaded CPython, which has none (a cp314t wheel).
+
+LIBPANDOC_PYODIDE=1: no extension, for the wheel for Pyodide
+(scripts/pyodide-wheel.sh), which carries libpandoc.wasm in _pyodide/.
 """
 
 import os
@@ -41,8 +44,10 @@ runtime_dirs = [rpath] if rpath and sys.platform.startswith("linux") else []
 link_args = [f"-Wl,-rpath,{rpath}"] if rpath and sys.platform == "darwin" else []
 abi3 = not sysconfig.get_config_var("Py_GIL_DISABLED")
 
+pyodide = os.environ.get("LIBPANDOC_PYODIDE") == "1"
+
 setup(
-    ext_modules=[
+    ext_modules=[] if pyodide else [
         Extension(
             "libpandoc._core",
             sources=["src/libpandoc/_core.c"],
@@ -55,5 +60,6 @@ setup(
             py_limited_api=abi3,
         )
     ],
-    options={"bdist_wheel": {"py_limited_api": "cp310"}} if abi3 else {},
+    package_data={"libpandoc": ["_pyodide/*"]} if pyodide else {},
+    options={"bdist_wheel": {"py_limited_api": "cp310"}} if abi3 and not pyodide else {},
 )

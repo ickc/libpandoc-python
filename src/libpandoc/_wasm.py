@@ -2,31 +2,76 @@
 extension (``_core.c``), calling libpandoc's C ABI in a WebAssembly module
 that the browser's (or Node's) engine runs.
 
-The host loads libpandoc.wasm and registers its byte-level interface as the
-JS module ``libpandoc_wasm`` before ``import libpandoc``::
+``await libpandoc.load()`` loads the module the wheel for Pyodide carries
+(``_pyodide/``: libpandoc.wasm, and libpandoc's ``wasm/pyodide.mjs``
+bundled), or one from a URL, and registers its byte-level interface as the
+JS module ``libpandoc_wasm``. A host may register one itself before
+``import libpandoc`` instead::
 
     import { load } from "libpandoc/wasm/browser.mjs";
     const pandoc = await load(wasmUrl);
     pyodide.registerJsModule("libpandoc_wasm", pandoc.abi);
 
-(How the package finds and loads the module itself is to be decided with
-its packaging.) No threads, JSON filters or ``pandoc_main`` in wasm.
+No threads, JSON filters or ``pandoc_main`` in wasm.
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from typing import Any
 
 from pyodide.ffi import JsException, create_proxy, to_js
 
+_DATA = os.path.join(os.path.dirname(__file__), "_pyodide")
+
+
+class _NotLoaded:
+    def __getattr__(self, name: str) -> Any:
+        raise RuntimeError(
+            "libpandoc.wasm is not loaded: `await libpandoc.load()` first"
+        )
+
+
 try:
     import libpandoc_wasm as _abi  # type: ignore[import-not-found]
-except ImportError as e:
-    raise ImportError(
-        "libpandoc in Pyodide needs libpandoc.wasm: load it and register "
-        "its `abi` as the JS module libpandoc_wasm before importing libpandoc"
-    ) from e
+except ImportError:
+    _abi = _NotLoaded()
+
+
+def loaded() -> bool:
+    return not isinstance(_abi, _NotLoaded)
+
+
+async def load(source: str | bytes | None = None) -> None:
+    """Load libpandoc.wasm: from ``source`` (a URL, fetched and compiled as
+    it streams, or the module's bytes), else from the wheel. Pyodide's
+    filesystem is pandoc's. Once loaded, calls are synchronous; loading
+    again replaces the instance (after a ``StoppedError``, for one)."""
+    global _abi
+    import pyodide_js  # type: ignore[import-not-found]
+    from pyodide.code import run_js
+
+    with open(os.path.join(_DATA, "libpandoc-pyodide.mjs"), encoding="utf-8") as f:
+        glue = f.read()
+    if source is None:
+        path = os.path.join(_DATA, "libpandoc.wasm")
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                "this libpandoc has no libpandoc.wasm: give load() its URL"
+            )
+        # read by JS, so that 60 MB don't cross as Python bytes
+        js_source = pyodide_js.FS.readFile(path)
+    elif isinstance(source, bytes):
+        js_source = to_js(source)
+    else:
+        js_source = source
+    imp = run_js(
+        "(text) => import('data:text/javascript;charset=utf-8,' + encodeURIComponent(text))"
+    )
+    glue_module = await imp(glue)
+    _abi = (await glue_module.loadForPyodide(pyodide_js, js_source)).abi
+
 
 Result = tuple[int, bytes, "str | None", "str | None", bytes]
 Callback = Callable[[bytes, bytes], bytes]
