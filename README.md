@@ -179,8 +179,8 @@ await libpandoc.load()            # from the wheel; or load(url), load(bytes)
 libpandoc.convert("*hi*", to="html")
 ```
 
-Pyodide's filesystem is pandoc's. Give paths as absolute ones: pandoc's
-working directory is `/`, whatever `os.chdir` says. A host may instead
+Pyodide's filesystem is pandoc's, and so is Python's working directory
+(set before each call): relative paths mean the same to both. A host may instead
 load libpandoc.wasm itself and register it before `import libpandoc`:
 
 ```js

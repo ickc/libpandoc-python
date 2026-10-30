@@ -49,6 +49,14 @@ def test_convert_files(tmp_path):
     assert dst.read_text() == "<p><em>x</em></p>\n"
 
 
+def test_relative_paths(tmp_path, monkeypatch):
+    # relative to Python's working directory, in Pyodide too
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "rel.md").write_text("# rel\n")
+    assert pandoc.convert(input_files=["rel.md"], output_file="rel.html") == ""
+    assert (tmp_path / "rel.html").read_text() == '<h1 id="rel">rel</h1>\n'
+
+
 def test_run_is_the_cli(tmp_path):
     assert pandoc.run(["-f", "markdown", "-t", "latex"], input="*hi*") == b"\\emph{hi}\n"
     (tmp_path / "d.yaml").write_text("to: rst\n")

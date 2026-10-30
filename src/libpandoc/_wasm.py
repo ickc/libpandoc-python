@@ -43,12 +43,25 @@ def loaded() -> bool:
     return not isinstance(_abi, _NotLoaded)
 
 
+_cwd = "/"  # pandoc's working directory (wasi-libc's), as last set
+
+
+def _chdir() -> None:
+    """pandoc's working directory as Python's (Pyodide's filesystem is
+    pandoc's), so that relative paths mean the same to both."""
+    global _cwd
+    cwd = os.getcwd()
+    if cwd != _cwd and getattr(_abi, "chdir", None) is not None:
+        if _abi.chdir(cwd) == 0:
+            _cwd = cwd
+
+
 async def load(source: str | bytes | None = None) -> None:
     """Load libpandoc.wasm: from ``source`` (a URL, fetched and compiled as
     it streams, or the module's bytes), else from the wheel. Pyodide's
     filesystem is pandoc's. Once loaded, calls are synchronous; loading
     again replaces the instance (after a ``StoppedError``, for one)."""
-    global _abi
+    global _abi, _cwd
     import pyodide_js  # type: ignore[import-not-found]
     from pyodide.code import run_js
 
@@ -71,6 +84,7 @@ async def load(source: str | bytes | None = None) -> None:
     )
     glue_module = await imp(glue)
     _abi = (await glue_module.loadForPyodide(pyodide_js, js_source)).abi
+    _cwd = "/"
 
 
 Result = tuple[int, bytes, "str | None", "str | None", bytes]
@@ -121,24 +135,29 @@ def abi_version() -> int:
 
 
 def convert(options: bytes, input: bytes | None) -> Result:
+    _chdir()
     return _result(_abi.convert(_js(options), _js(input)))
 
 
 def convert_args(args: tuple[bytes, ...], input: bytes | None) -> Result:
+    _chdir()
     return _result(_abi.convertArgs(to_js([a.decode() for a in args]), _js(input)))
 
 
 def convert_filters(options: bytes, input: bytes | None, filters: tuple[Callback, ...]) -> Result:
+    _chdir()
     return _call_filters(lambda fs: _abi.convertFilters(_js(options), _js(input), fs), filters)
 
 
 def convert_args_filters(args: tuple[bytes, ...], input: bytes | None,
                          filters: tuple[Callback, ...]) -> Result:
+    _chdir()
     argv = to_js([a.decode() for a in args])
     return _call_filters(lambda fs: _abi.convertArgsFilters(argv, _js(input), fs), filters)
 
 
 def read_many(request: bytes) -> Result:
+    _chdir()
     return _result(_abi.readMany(_js(request)))
 
 
