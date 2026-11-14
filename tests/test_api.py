@@ -136,7 +136,8 @@ def test_untrusted(tmp_path):
     # libpandoc's "untrusted": only options that read, write, fetch and run
     # nothing, with pandoc's sandbox on
     assert pandoc.convert("*hi*", to="html", untrusted=True) == "<p><em>hi</em></p>\n"
-    for opts in ({"citeproc": True}, {"filters": ["x.lua"]}, {"output_file": str(tmp_path / "o")},
+    # (citeproc: refused before libpandoc 1.8, which runs it inside the sandbox)
+    for opts in ({"filters": ["x.lua"]}, {"output_file": str(tmp_path / "o")},
                  {"to": "pdf"}, {"data_dir": str(tmp_path)}):
         with pytest.raises(pandoc.PandocError, match="not allowed for untrusted code"):
             pandoc.convert("x", untrusted=True, **{"to": "html", **opts})
