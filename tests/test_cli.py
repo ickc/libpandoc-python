@@ -43,11 +43,12 @@ def test_pandoc_parses_the_arguments(tmp_path):
     d = tmp_path / "d.yaml"
     d.write_text("filters: [demo, x.lua]\n")
     parsed = pandoc.query("parse-args", args=["--filt", "a", "-d", str(d)])
-    assert parsed == {"filters": [
+    # (libpandoc 1.9 also answers "options", pandoc's own parsed options)
+    assert parsed["filters"] == [
         {"type": "json", "path": "a"},
         {"type": "json", "path": "demo"},
         {"type": "lua", "path": "x.lua"},
-    ]}
+    ]
     assert pandoc.query("parse-args", args=["-t", "html", "--version"]) == {
         "informational": "VersionInfo"}
 
