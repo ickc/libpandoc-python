@@ -37,7 +37,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Fetch libpandoc
         env:
@@ -52,15 +52,19 @@ jobs:
             mkdir libpandoc-musl && tar -xzf "libpandoc-${{ matrix.subdir }}-musl.tar.gz" -C libpandoc-musl
           fi
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         id: py314
         with:
           python-version: "3.14"
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         id: py314t
         with:
           python-version: "3.14t"
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
+        id: py315
+        with:
+          python-version: "3.15"
+      - uses: actions/setup-python@v7
         id: py310
         with:
           python-version: "3.10"
@@ -69,6 +73,7 @@ jobs:
           echo "PY310=${{ steps.py310.outputs.python-path }}" >> "$GITHUB_ENV"
           echo "PY314=${{ steps.py314.outputs.python-path }}" >> "$GITHUB_ENV"
           echo "PY314T=${{ steps.py314t.outputs.python-path }}" >> "$GITHUB_ENV"
+          echo "PY315=${{ steps.py315.outputs.python-path }}" >> "$GITHUB_ENV"
 
       - name: MSVC import library
         if: runner.os == 'Windows'
@@ -80,7 +85,7 @@ jobs:
 
       - name: Build and bundle the wheel (Linux, manylinux container)
         if: runner.os == 'Linux'
-        run: pipx run cibuildwheel==3.* --output-dir wheelhouse
+        run: pipx run cibuildwheel==4.* --output-dir wheelhouse
 
       - name: Build the abi3 and free-threaded wheels
         if: runner.os != 'Linux'
@@ -120,7 +125,7 @@ jobs:
       - name: Test the wheel
         run: |
           # outside the source tree, so that the installed package is tested
-          for py in "$PY310" "$PY314" "$PY314T"; do
+          for py in "$PY310" "$PY314" "$PY314T" "$PY315"; do
             v=venv$(basename "$(dirname "$py")")-$RANDOM
             "$py" -m venv "$v"
             if [[ $RUNNER_OS == Windows ]]; then bin=Scripts; else bin=bin; fi
@@ -159,7 +164,7 @@ jobs:
           (cd tests && ../venv-conf/bin/python -m pytest -v -p no:cacheprovider --rootdir=. test_cli.py)
           venv-conf/bin/python tests/conformance.py "$RUNNER_TEMP/pandoc-$v" --pandoc "$PWD/pandoc-$v/bin/pandoc"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.subdir }}
           path: wheelhouse/*.whl
@@ -173,8 +178,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           # GHC's wasm needs a recent V8
           node-version: 26
@@ -190,7 +195,7 @@ jobs:
       - name: Pyodide and panir
         run: |
           mkdir -p "$RUNNER_TEMP/pyodide" && cd "$RUNNER_TEMP/pyodide"
-          npm init -y >/dev/null && npm install pyodide@314.0.7
+          npm init -y >/dev/null && npm install pyodide@314.0.8
           python3 -m pip wheel --no-deps -w wheels "$PANIR"
       - name: Test
         run: |
@@ -200,7 +205,7 @@ jobs:
             --deselect tests/test_api.py::test_threads \
             --deselect tests/test_api.py::test_num_threads \
             --deselect tests/test_api.py::test_num_threads_from_the_environment
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheel-pyodide
           path: wheelhouse/*.whl
