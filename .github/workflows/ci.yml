@@ -37,7 +37,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Fetch libpandoc
         env:
@@ -52,15 +52,15 @@ jobs:
             mkdir libpandoc-musl && tar -xzf "libpandoc-${{ matrix.subdir }}-musl.tar.gz" -C libpandoc-musl
           fi
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         id: py314
         with:
           python-version: "3.14"
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         id: py314t
         with:
           python-version: "3.14t"
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         id: py310
         with:
           python-version: "3.10"
@@ -159,7 +159,7 @@ jobs:
           (cd tests && ../venv-conf/bin/python -m pytest -v -p no:cacheprovider --rootdir=. test_cli.py)
           venv-conf/bin/python tests/conformance.py "$RUNNER_TEMP/pandoc-$v" --pandoc "$PWD/pandoc-$v/bin/pandoc"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.subdir }}
           path: wheelhouse/*.whl
@@ -173,8 +173,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           # GHC's wasm needs a recent V8
           node-version: 26
@@ -200,7 +200,7 @@ jobs:
             --deselect tests/test_api.py::test_threads \
             --deselect tests/test_api.py::test_num_threads \
             --deselect tests/test_api.py::test_num_threads_from_the_environment
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheel-pyodide
           path: wheelhouse/*.whl
