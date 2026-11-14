@@ -147,7 +147,7 @@ speak the same API version.
 
 ## Installing
 
-Wheels are `abi3`: one per platform serves every CPython ≥ 3.10 (and one
+Wheels are `abi3`: one per platform serves every CPython ≥ 3.11 (and one
 more for free-threaded 3.14t). Each bundles libpandoc (about 60 MB): Linux
 (glibc ≥ 2.28, and musl ≥ 1.2 such as Alpine; x86-64 and aarch64), macOS
 (Intel and Arm), Windows x64, and Pyodide (below).

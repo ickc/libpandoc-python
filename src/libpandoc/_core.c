@@ -2,7 +2,7 @@
  * libpandoc._core: the CPython binding to libpandoc's C ABI.
  *
  * Built against the limited API (abi3), so one wheel per platform serves
- * every CPython >= 3.10; free-threaded CPython (3.14t), which has no
+ * every CPython >= 3.11; free-threaded CPython (3.14t), which has no
  * limited API, gets a wheel of its own. The GIL is released while pandoc
  * runs, so conversions in different Python threads run in parallel.
  *

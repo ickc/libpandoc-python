@@ -56,10 +56,10 @@ setup(
             libraries=["pandoc"],
             runtime_library_dirs=runtime_dirs,
             extra_link_args=link_args,
-            define_macros=[("Py_LIMITED_API", "0x030A0000")] if abi3 else [],
+            define_macros=[("Py_LIMITED_API", "0x030B0000")] if abi3 else [],
             py_limited_api=abi3,
         )
     ],
     package_data={"libpandoc": ["_pyodide/*"]} if pyodide else {},
-    options={"bdist_wheel": {"py_limited_api": "cp310"}} if abi3 and not pyodide else {},
+    options={"bdist_wheel": {"py_limited_api": "cp311"}} if abi3 and not pyodide else {},
 )

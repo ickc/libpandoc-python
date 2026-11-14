@@ -65,12 +65,12 @@ jobs:
         with:
           python-version: "3.15"
       - uses: actions/setup-python@v7
-        id: py310
+        id: py311
         with:
-          python-version: "3.10"
+          python-version: "3.11"
       - name: Python paths
         run: |
-          echo "PY310=${{ steps.py310.outputs.python-path }}" >> "$GITHUB_ENV"
+          echo "PY311=${{ steps.py311.outputs.python-path }}" >> "$GITHUB_ENV"
           echo "PY314=${{ steps.py314.outputs.python-path }}" >> "$GITHUB_ENV"
           echo "PY314T=${{ steps.py314t.outputs.python-path }}" >> "$GITHUB_ENV"
           echo "PY315=${{ steps.py315.outputs.python-path }}" >> "$GITHUB_ENV"
@@ -92,7 +92,7 @@ jobs:
         env:
           LIBPANDOC_RPATH: "1"
         run: |
-          for py in "$PY310" "$PY314T"; do
+          for py in "$PY311" "$PY314T"; do
             "$py" -m pip install build
             "$py" -m build --wheel --outdir raw
           done
@@ -103,11 +103,11 @@ jobs:
         run: |
           case "$RUNNER_OS" in
             macOS)
-              "$PY310" -m pip install delocate
-              "$(dirname "$PY310")/delocate-wheel" -w wheelhouse -v raw/*.whl ;;
+              "$PY311" -m pip install delocate
+              "$(dirname "$PY311")/delocate-wheel" -w wheelhouse -v raw/*.whl ;;
             Windows)
-              "$PY310" -m pip install delvewheel
-              "$PY310" -m delvewheel repair --add-path "$LIBPANDOC_PREFIX/bin" -w wheelhouse raw/*.whl ;;
+              "$PY311" -m pip install delvewheel
+              "$PY311" -m delvewheel repair --add-path "$LIBPANDOC_PREFIX/bin" -w wheelhouse raw/*.whl ;;
           esac
           ls -la wheelhouse
 
@@ -125,7 +125,7 @@ jobs:
       - name: Test the wheel
         run: |
           # outside the source tree, so that the installed package is tested
-          for py in "$PY310" "$PY314" "$PY314T" "$PY315"; do
+          for py in "$PY311" "$PY314" "$PY314T" "$PY315"; do
             v=venv$(basename "$(dirname "$py")")-$RANDOM
             "$py" -m venv "$v"
             if [[ $RUNNER_OS == Windows ]]; then bin=Scripts; else bin=bin; fi

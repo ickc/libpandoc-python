@@ -10,7 +10,7 @@ readme = "README.md"
 license = "GPL-2.0-or-later"
 license-files = ["COPYING.md"]
 authors = [{ name = "Kolen Cheung" }]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = ["panir >=0.1, <0.2"]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -40,7 +40,7 @@ testpaths = ["tests"]
 # build serves every Python with a GIL, and one more free-threaded CPython
 # 3.14t; CI tests the wheels themselves afterwards.
 [tool.cibuildwheel]
-build = "cp310-* cp314t-*"
+build = "cp311-* cp314t-*"
 test-skip = "*"
 
 [tool.cibuildwheel.linux]
