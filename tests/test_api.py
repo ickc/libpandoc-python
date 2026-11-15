@@ -110,15 +110,20 @@ def test_threads():
 
 
 def test_num_threads():
-    n = pandoc.num_threads()
-    assert n >= 1
-    try:
-        assert pandoc.set_num_threads(2) == 2
-        assert pandoc.num_threads() == 2
-        assert pandoc.convert("*x*") == "<p><em>x</em></p>\n"
-        assert pandoc.set_num_threads(0) == 1
-    finally:
-        pandoc.set_num_threads(n)
+    assert pandoc.num_threads() >= 1
+    # Setting the number: in a process of its own, before pandoc's threads
+    # have grown (from libpandoc 1.9 it changes nothing after that, and
+    # another test here may have run calls in parallel already).
+    import subprocess
+    import sys
+    code = (
+        "import libpandoc as p\n"
+        "a = p.set_num_threads(2); b = p.num_threads(); c = p.convert('*x*')\n"
+        "print(a, b, p.set_num_threads(0), c.strip())"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    most = min(2, __import__("os").cpu_count() or 1)
+    assert out.stdout.strip() == f"{most} {most} 1 <p><em>x</em></p>"
 
 
 def test_num_threads_from_the_environment():
