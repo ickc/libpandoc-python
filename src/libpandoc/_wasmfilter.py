@@ -101,16 +101,23 @@ def _engine() -> Any:
 
 
 def _ticking() -> None:
-    """The epoch's clock: a thread advancing it every _TICK (wasm runs
-    without the GIL), started by the first filter with a timeout."""
+    """The epoch's clock: a thread advancing it by the time that has
+    passed, in _TICKs (wasm runs without the GIL), started by the first
+    filter with a timeout. By the time passed, not by its sleeps: a system
+    may stretch a short sleep (macOS does), and a limit then came late (a
+    0.3 s one after 1 s)."""
     global _CLOCK
     engine = _engine()
     with _LOCK:
         if _CLOCK is None:
             def tick() -> None:
+                started, done = time.monotonic(), 0
                 while True:
                     time.sleep(_TICK)
-                    engine.increment_epoch()
+                    due = int((time.monotonic() - started) / _TICK)
+                    for _ in range(due - done):
+                        engine.increment_epoch()
+                    done = due
 
             _CLOCK = threading.Thread(target=tick, name="wasm-filter-clock", daemon=True)
             _CLOCK.start()
