@@ -109,7 +109,7 @@ def callback(
             return subprocess_run(path, doc, fmt, env)
         try:
             return _in_process(
-                path, doc, fmt, env, lambda f: _run_filter(f, doc, ctx, conversion, options)
+                path, doc, fmt, env, lambda fs: _run_filters(fs, doc, ctx, conversion, options)
             )
         except Exception as e:  # noqa: BLE001  whatever the script raised
             print(
@@ -123,12 +123,15 @@ def callback(
     return run
 
 
-def _run_filter(
-    f: panir.Filter, doc: bytes, ctx: Mapping[str, Any], conversion: Any, options: Any
+def _run_filters(
+    fs: list[panir.Filter], doc: bytes, ctx: Mapping[str, Any], conversion: Any, options: Any
 ) -> bytes:
-    """A panir script's Filter, handed over: run on the document directly."""
+    """A panir script's Filters, handed over (one for each filter of its
+    ``main([f, g])``): run on the document directly, in order."""
     user = None if options is None else {k: v for k, v in options.items() if k != "filters"}
-    out = f(panir.loads(doc), conversion=conversion(ctx, user))
+    out = panir.loads(doc)
+    for f in fs:
+        out = f(out, conversion=conversion(ctx, user))
     return panir.dumps(out).encode()
 
 
@@ -137,7 +140,7 @@ def _in_process(
     doc: bytes,
     fmt: str,
     env: Mapping[str, str],
-    handed: Callable[[panir.Filter], bytes],
+    handed: Callable[[list[panir.Filter]], bytes],
 ) -> bytes:
     filters: list[panir.Filter] = []
     out = io.BytesIO()
@@ -162,7 +165,7 @@ def _in_process(
         finally:
             panir.filter.handoff.reset(token)
     if filters:
-        return handed(filters[-1])
+        return handed(filters)
     try:
         json.loads(result)
     except ValueError:

@@ -65,6 +65,35 @@ def test_a_panir_script_hands_its_filter_over(tmp_path, md, capfd, monkeypatch):
     assert f"pid={os.getpid()}|gfm" in out
 
 
+TWO = """\
+import os
+import panir
+from panir import Filter, Pandoc, Para
+
+first, second = Filter(), Filter()
+
+@first.on(Pandoc)
+def one(doc):
+    doc.blocks.append(Para("one"))
+
+@second.on(Pandoc)
+def two(doc):
+    doc.blocks.append(Para(f"two|pid={os.getpid()}|after {len(doc.blocks)}"))
+
+if __name__ == "__main__":
+    panir.main([first, second])
+"""
+
+
+def test_a_panir_script_hands_over_each_of_its_filters(tmp_path, md, capfd, monkeypatch):
+    """A script's main([f, g]): both run here, in order, as a Lua file's {f, g}."""
+    monkeypatch.delenv(_scripts.ENV, raising=False)
+    s = script(tmp_path, "two.py", TWO)
+    status, out, err = pandocpy(capfd, "-t", "html", "-F", s, md)
+    assert status == 0, err
+    assert "<p>one</p>" in out and f"two|pid={os.getpid()}|after 2" in out
+
+
 def test_the_author_opts_out(tmp_path, md, capfd, monkeypatch):
     monkeypatch.delenv(_scripts.ENV, raising=False)
     s = script(tmp_path, "own.py", "# pandocpy: subprocess\n" + PLAIN)
