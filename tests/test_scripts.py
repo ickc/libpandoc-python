@@ -237,3 +237,99 @@ def test_scripts_in_parallel_threads(tmp_path, monkeypatch):
         results = list(ex.map(one, range(40)))
     assert all(expected in out for out, expected in results)
     assert (sys.stdout, sys.stdin, sys.argv, os.environ) == real
+
+
+# A script of several files: what it imports from beside it, as python script.py
+
+USES_UTIL = """\
+import json, os, sys
+import util
+doc = json.load(sys.stdin)
+doc["blocks"].append({"t": "Para", "c": [{"t": "Str", "c": f"{util.WORD}|pid={os.getpid()}"}]})
+json.dump(doc, sys.stdout)
+"""
+
+
+def folder_with(tmp_path, name, files):
+    d = tmp_path / name
+    for rel, code in files.items():
+        (d / rel).parent.mkdir(parents=True, exist_ok=True)
+        (d / rel).write_text(textwrap.dedent(code))
+    return d
+
+
+def test_two_scripts_each_with_a_module_beside_it_of_the_same_name(tmp_path, monkeypatch):
+    """Each imports its own util.py, in process, one after the other; after,
+    neither folder is on sys.path, and no util is left in sys.modules."""
+    import sys
+
+    import libpandoc
+
+    monkeypatch.delenv(_scripts.ENV, raising=False)
+    a = folder_with(tmp_path, "a", {"f.py": USES_UTIL, "util.py": "WORD = 'from-a'\n"})
+    b = folder_with(tmp_path, "b", {"f.py": USES_UTIL, "util.py": "WORD = 'from-b'\n"})
+    path = list(sys.path)
+    out = libpandoc.convert("hi", to="html", filters=[str(a / "f.py"), str(b / "f.py")])
+    pid = f"pid={os.getpid()}"  # (both in process: neither fell back to a subprocess)
+    assert f"<p>from-a|{pid}</p>\n<p>from-b|{pid}</p>" in out
+    assert sys.path == path and "util" not in sys.modules
+
+
+def test_a_script_importing_a_package_beside_it(tmp_path, monkeypatch):
+    import sys
+
+    import libpandoc
+
+    monkeypatch.delenv(_scripts.ENV, raising=False)
+    d = folder_with(tmp_path, "p", {
+        "f.py": """\
+            import json, os, sys
+            from helpers.words import WORD
+            doc = json.load(sys.stdin)
+            doc["blocks"].append({"t": "Para", "c": [{"t": "Str", "c": f"{WORD}|pid={os.getpid()}"}]})
+            json.dump(doc, sys.stdout)
+            """,
+        "helpers/__init__.py": "",
+        "helpers/words.py": "WORD = 'packaged'\n",
+    })
+    out = libpandoc.convert("hi", to="html", filters=[str(d / "f.py")])
+    assert f"<p>packaged|pid={os.getpid()}</p>" in out
+    assert not any(m == "helpers" or m.startswith("helpers.") for m in sys.modules)
+
+
+def test_the_path_is_restored_after_the_script_fails(tmp_path, monkeypatch):
+    """A script that imports from beside it, then raises: sys.path and
+    sys.modules as they were (the subprocess it falls back to is another
+    matter: here, the run in process alone)."""
+    import sys
+
+    monkeypatch.delenv(_scripts.ENV, raising=False)
+    d = folder_with(tmp_path, "e", {"f.py": "import util\nraise RuntimeError(util.WORD)\n",
+                                    "util.py": "WORD = 'boom'\n"})
+    path = list(sys.path)
+    with pytest.raises(RuntimeError, match="boom"):
+        _scripts._in_process(str(d / "f.py"), b"{}", "html", {}, lambda fs: b"")
+    assert sys.path == path and "util" not in sys.modules
+
+
+def test_a_script_sees_what_python_script_py_gives_it(tmp_path, monkeypatch):
+    """__file__ absolute, sys.path[0] its folder (symbolic links resolved),
+    __name__ and __spec__, the working directory, as python script.py has
+    them; sys.argv[0] absolute too (python script.py: as given)."""
+    import json
+
+    monkeypatch.delenv(_scripts.ENV, raising=False)
+    real = folder_with(tmp_path, "real", {"f.py": """\
+        import json, os, sys
+        doc = json.load(sys.stdin)
+        seen = [__file__, sys.argv[0], sys.path[0], __name__, repr(__spec__), os.getcwd()]
+        doc["blocks"].append({"t": "Para", "c": [{"t": "Str", "c": json.dumps(seen)}]})
+        json.dump(doc, sys.stdout)
+        """})
+    (tmp_path / "link").symlink_to(real)
+    monkeypatch.chdir(tmp_path)
+    doc = b'{"pandoc-api-version":[1,23,1,2],"meta":{},"blocks":[]}'
+    out = _scripts._in_process("link/f.py", doc, "html", {}, lambda fs: b"")
+    seen = json.loads(json.loads(out)["blocks"][-1]["c"][0]["c"])
+    path = str(tmp_path / "link/f.py")
+    assert seen == [path, path, os.path.realpath(real), "__main__", "None", str(tmp_path)]

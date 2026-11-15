@@ -124,8 +124,12 @@ their standard input, saving a Python start and its imports per filter
 (about 30 ms each). The same holds for `convert(filters=["foo.py"])`, from
 any number of threads: while scripts run, `sys.stdin`, `sys.stdout`,
 `sys.argv` and `os.environ` are each thread's script's own there, and the
-real ones elsewhere. Scripts run with this Python and its packages either
-way. A script runs as a subprocess instead:
+real ones elsewhere. A script imports what `python foo.py` would let it,
+modules and packages beside it included (its folder is first on
+`sys.path` while it runs, and what it imported from there is forgotten
+after, so another script's `util.py` is that script's own); what still
+differs is in `libpandoc/_scripts.py`'s docstring. Scripts run with this
+Python and its packages either way. A script runs as a subprocess instead:
 
 - if its author says so, with a line `# pandocpy: subprocess` near its top;
 - if the user says so: `PANDOCPY_SUBPROCESS=foo.py,bar` (paths, file names,
