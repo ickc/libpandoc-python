@@ -14,6 +14,31 @@ runs, ``sys.stdin``, ``sys.stdout``, ``sys.argv`` and ``os.environ`` are
 stand-ins that are the running script's in its thread, and the real ones in
 every other thread. Each run has a fresh module namespace.
 
+What it can import is what ``python script.py`` gives it: the script's
+folder (symbolic links resolved) is first on ``sys.path`` while it runs, so
+a module or package beside it imports; afterwards the folder is taken out
+again (also when the script fails), and so are the modules the run imported
+from it, so that another script's module of the same name (two filters each
+with a ``util.py``) is that script's own. ``__file__`` is the script's
+absolute path, ``__name__`` is ``"__main__"`` and ``__spec__`` ``None``, the
+working directory is this process's: all as ``python script.py`` has them.
+What differs, as it would for any code run in a process already running:
+
+- ``sys.argv[0]`` is the absolute path too (``runpy`` sets it to
+  ``__file__``), where ``python script.py`` has the path as given;
+- a module this process has already imported (the standard library's, or
+  libpandoc's and panir's dependencies) is the one the script gets, where
+  ``python script.py`` would find one of the same name beside it first;
+- scripts running at once in several threads share ``sys.path`` and
+  ``sys.modules``: each sees the other's folder on the path while both
+  run, and two such scripts' modules of the same name are one;
+- what a script changes in the process stays changed: its own ``sys.path``
+  entries, the working directory, ``sys.setrecursionlimit``, logging and
+  warnings filters, modules it imported from elsewhere; ``atexit``
+  handlers run when this process exits, not when the script ends;
+- ``sys.modules["__main__"]`` is the script's module only while it runs
+  (``runpy``'s), and ``__loader__`` is ``None``.
+
 Either way a script runs with this Python and its packages, rather than
 whichever ``python`` is first on ``PATH`` (as pandoc would). Not in process,
 it runs as a subprocess:
@@ -28,6 +53,7 @@ it runs as a subprocess:
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
@@ -150,10 +176,11 @@ def _in_process(
         stdout=io.TextIOWrapper(out, encoding="utf-8", write_through=True),
         argv=[path, fmt],
         env=dict(env),
-    ) as streams:
+    ) as streams, _beside(os.path.dirname(os.path.realpath(path))):
         try:
             try:
-                runpy.run_path(path, run_name="__main__")
+                # (absolute, as python script.py makes __file__)
+                runpy.run_path(os.path.abspath(path), run_name="__main__")
             except SystemExit as e:
                 if e.code not in (None, 0):
                     raise ScriptFailed(f"it exited with {e.code}") from None
@@ -171,6 +198,31 @@ def _in_process(
     except ValueError:
         raise ScriptFailed("its output isn't a document (pandoc's JSON)") from None
     return result
+
+
+@contextlib.contextmanager
+def _beside(folder: str) -> Iterator[None]:
+    """While a script runs, its folder first on ``sys.path``, as ``python
+    script.py`` has it; after, the folder and the modules the run imported
+    from it gone again."""
+    before = sys.modules.copy()
+    with _lock:
+        sys.path.insert(0, folder)
+    try:
+        yield
+    finally:
+        with _lock, contextlib.suppress(ValueError):  # (unless the script took it out)
+            sys.path.remove(folder)
+        inside = os.path.join(folder, "")
+        for name, module in sys.modules.copy().items():
+            if name not in before and _imported_from(module, inside):
+                sys.modules.pop(name, None)
+
+
+def _imported_from(module: Any, folder: str) -> bool:
+    """Whether a module (or a package, its folder) is in ``folder``."""
+    places = [getattr(module, "__file__", None), *(getattr(module, "__path__", None) or ())]
+    return any(isinstance(p, str) and os.path.realpath(p).startswith(folder) for p in places)
 
 
 # -- per-thread standard streams, argv and environment -------------------------
