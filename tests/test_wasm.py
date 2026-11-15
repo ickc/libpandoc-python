@@ -123,6 +123,9 @@ def test_limits(monkeypatch):
     monkeypatch.setenv("LIBPANDOC_WASM_TIMEOUT", "0.3")
     monkeypatch.setenv("LIBPANDOC_WASM_MAX_MEMORY", "64m")
     assert "its time limit" in failure(wasm("misbehave"), "```spin\n```")
+    # (the memory limit with time enough to reach it: on a slow machine the
+    # 0.3 s came first)
+    monkeypatch.setenv("LIBPANDOC_WASM_TIMEOUT", "30")
     assert "memory limit: 67108864 bytes" in failure(wasm("misbehave"), "```hog\n```")
     assert failure(wasm("upper"), "hi") is None
     # 0: no limit, whatever the environment says
