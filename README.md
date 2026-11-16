@@ -70,8 +70,15 @@ pandoc.write(f(doc), "plain")
   Python filters run in this process, inside the one pandoc conversion, as
   pandoc runs a Lua filter: what the reader keeps in memory (images embedded
   in a docx) reaches the writer, and a filter's exception is raised from
-  `convert` as it is. A filter may call pandoc itself (`convert`, or
-  `ctx.read(text)` to parse a fragment the way the document was read).
+  `convert` as it is. A filter that takes the conversion
+  (`ctx.conversion`, a `panir.Conversion`) knows the formats pandoc decided
+  on, the reader's and the writer's options (`writer_options`: `-N`,
+  `--top-level-division`, ..., as Lua's `PANDOC_WRITER_OPTIONS`) and, from
+  `convert`, the options themselves. A filter may call pandoc itself
+  (`convert`, or `read(text, ctx.conversion)` to parse a fragment the way
+  the document was read). Filter scripts and wasm filters get
+  `PANDOC_WRITER_OPTIONS` in their environment, as libpandoc's JSON
+  filters do.
 
 ## Wasm filters
 

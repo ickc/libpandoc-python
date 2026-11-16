@@ -55,9 +55,10 @@ def test_a_wasm_filter_runs_in_the_conversion():
 
 @needs_filters
 def test_it_is_told_the_conversion():
-    out = json.loads(pandoc.convert("x", from_="commonmark_x", to="json",
+    out = json.loads(pandoc.convert("x", from_="commonmark_x", to="json", number_sections=True,
                                     filters=[wasm("conversion")]))
     told = json.loads(out["blocks"][-1]["c"][1])
+    assert told["number-sections"] is True  # (PANDOC_WRITER_OPTIONS)
     assert told["format"] == "json"
     assert told["input-format"].startswith("commonmark_x")
     assert told["pandoc-version"] == pandoc.pandoc_version()

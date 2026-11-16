@@ -2,9 +2,10 @@
 
 A wasm filter is a pandoc JSON filter built for WASI (``wasm32-wasip1``),
 such as a panir Rust filter: the document on stdin, the new one on stdout,
-the output format as its first argument, pandoc's variables in its
-environment. It runs sandboxed: it sees only the directories it is given
-(the current one, read-only, by default), no network, no programs. It may
+the output format as its first argument, the variables libpandoc gives
+JSON filters in its environment (``PANDOC_WRITER_OPTIONS`` among them). It
+runs sandboxed: it sees only the directories it is given (the current one,
+read-only, by default), no network, no programs. It may
 call pandoc through the imports of module ``libpandoc`` (libpandoc-rs's
 ``guest.rs``), which this host answers on this process's pandoc, marked
 ``"untrusted": true``: libpandoc then runs them in pandoc's sandbox, with no
@@ -29,6 +30,8 @@ import threading
 import time
 from collections.abc import Sequence
 from typing import Any
+
+from ._scripts import filter_env
 
 TIMEOUT_VAR = "LIBPANDOC_WASM_TIMEOUT"
 MAX_MEMORY_VAR = "LIBPANDOC_WASM_MAX_MEMORY"
@@ -189,13 +192,7 @@ class WasmFilter:
         wasi = wasmtime.WasiConfig()
         # (WASI's text: a file name that isn't UTF-8 with U+FFFD)
         wasi.argv = [os.fsencode(self.name).decode("utf-8", "replace"), ctx.get("format") or ""]
-        env = [("PANDOC_VERSION", self._pandoc_version),
-               ("PANDOC_READER_OPTIONS", json.dumps(ctx.get("reader-options") or {}))]
-        for var, key in (("PANDOC_INPUT_FORMAT", "input-format"),
-                         ("PANDOC_OUTPUT_FORMAT", "output-format")):
-            if ctx.get(key):
-                env.append((var, ctx[key]))
-        wasi.env = env
+        wasi.env = list(filter_env(ctx, self._pandoc_version).items())
         _stdin_bytes(wasi, doc)
         out: list[bytes] = []
         wasi.stdout_custom = out.append

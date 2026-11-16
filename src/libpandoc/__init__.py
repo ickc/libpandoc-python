@@ -557,6 +557,7 @@ def _conversion(context: Mapping[str, Any], options: Mapping[str, Any] | None) -
         input_format=context.get("input-format"),
         output_format=context.get("output-format"),
         reader_options=context.get("reader-options"),
+        writer_options=context.get("writer-options"),
         options=options,
     )
 
