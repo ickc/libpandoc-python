@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -262,6 +263,29 @@ def test_pandocpy_runs_wasm_filters(tmp_path, capfd):
     status = cli.main(["-t", "plain", "-F", "nonesuch.wasm", str(doc)])
     assert status == cli.FILTER_FAILED
     assert "nonesuch.wasm not found" in capfd.readouterr().err
+
+
+@needs_filters
+def test_wasm_filters_in_threads():
+    """Conversions with wasm filters in several threads at once (wasmtime-py
+    49's tables of host functions, changed without a lock, broke)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(i: int) -> str:
+        return pandoc.convert(f"n{i}", to="plain", filters=[wasm("upper")])
+
+    with ThreadPoolExecutor(8) as pool:
+        assert list(pool.map(one, range(64))) == [f"N{i}\n" for i in range(64)]
+
+
+@needs_filters
+def test_pandocpy_with_a_failing_wasm_filter_exits(tmp_path):
+    """As pandoc's status for a failed filter (the filter's store, kept to
+    the interpreter's exit, aborted Python 3.11 there)."""
+    r = subprocess.run([sys.executable, "-m", "libpandoc", "-t", "plain", "-F", wasm("include")],
+                       input=b"```include\nnonesuch.txt\n```\n", capture_output=True,
+                       cwd=tmp_path, timeout=120, check=False)
+    assert r.returncode == 83, r.stderr
 
 
 if sys.platform == "emscripten":  # no wasmtime in Pyodide

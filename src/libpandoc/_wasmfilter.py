@@ -299,32 +299,39 @@ class WasmFilter:
                 msg += f" (its memory limit: {max_memory} bytes, {MAX_MEMORY_VAR})"
             return WasmFilterError(msg)
 
-        error = None
+        # The store is freed when the run ends: kept by the traceback of
+        # its error (a cycle, through this frame) until the interpreter
+        # exits, its WASI streams' callbacks into Python aborted 3.11 then.
         try:
-            instance = linker.instantiate(store, self._module)
-            start = instance.exports(store).get("_start")
-            if start is None:
-                raise WasmFilterError(f"{self.name}: not a WASI command (no _start)")
-            start(store)
-        except wasmtime.ExitTrap as e:
-            if e.code != 0:
-                error = failed(f"{self.name} exited with status {e.code}")
-        except wasmtime.Trap as e:
-            interrupted = timeout is not None and e.trap_code == wasmtime.TrapCode.INTERRUPT
-            error = failed(f"{self.name}: {e}", interrupted)
-        except wasmtime.WasmtimeError as e:
-            error = failed(f"{self.name}: {e}")
-        if clock.out_of_time:
-            # its time ran out in a call to pandoc: stopped, whatever it did after
-            error = failed("", interrupted=True)
-        for over, stream in ((out_over, "output"), (err_over, "error")):
-            if over[0]:  # (the failed write made it fail, whatever it said)
-                error = WasmFilterError(
-                    f"{self.name}: wrote more than its memory limit ({max_memory} bytes, "
-                    f"{MAX_MEMORY_VAR}) to its standard {stream}")
-        if error is not None:
-            raise error
-        return b"".join(out)
+            error = None
+            try:
+                instance = linker.instantiate(store, self._module)
+                start = instance.exports(store).get("_start")
+                if start is None:
+                    raise WasmFilterError(f"{self.name}: not a WASI command (no _start)")
+                start(store)
+            except wasmtime.ExitTrap as e:
+                if e.code != 0:
+                    error = failed(f"{self.name} exited with status {e.code}")
+            except wasmtime.Trap as e:
+                interrupted = timeout is not None and e.trap_code == wasmtime.TrapCode.INTERRUPT
+                error = failed(f"{self.name}: {e}", interrupted)
+            except wasmtime.WasmtimeError as e:
+                error = failed(f"{self.name}: {e}")
+            if clock.out_of_time:
+                # its time ran out in a call to pandoc: stopped, whatever it did after
+                error = failed("", interrupted=True)
+            for over, stream in ((out_over, "output"), (err_over, "error")):
+                if over[0]:  # (the failed write made it fail, whatever it said)
+                    error = WasmFilterError(
+                        f"{self.name}: wrote more than its memory limit ({max_memory} bytes, "
+                        f"{MAX_MEMORY_VAR}) to its standard {stream}")
+            if error is not None:
+                raise error
+            return b"".join(out)
+        finally:
+            store.close()
+            linker.close()
 
 
 def _stdin_bytes(wasi: Any, data: bytes) -> None:
