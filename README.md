@@ -440,7 +440,7 @@ pandoc's reader and writer dominate. Exchanging the AST as JSON, into
 checked Python objects, costs about 15% over a Lua filter. Every filter
 but a Lua one is handed the whole document as pandoc's JSON and hands it
 back, whatever it changes: on a 9.4 MB textbook a filter that does next to
-nothing adds 0.6 s in Python (0.35 s in Rust, as a JSON filter), where a
+nothing adds 0.6 s in Python (0.35 s in Rust, 0.37 s as a JSON filter), where a
 Lua filter, given elements as it asks for them, adds 0.09 s; pandoc's own
 encoding and decoding of the JSON is most of it.
 
