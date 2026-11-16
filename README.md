@@ -91,13 +91,17 @@ not filters); a wasm filter can't:
   `writable=` for others); no network, no programs;
 - **calls to pandoc** (libpandoc-rs's `libpandoc` crate, built for wasm):
   in pandoc's sandbox, with no options that read or write files, fetch or
-  run anything (libpandoc checks them: `"untrusted"`, 1.7);
+  run anything, and nothing read from the user data directory (libpandoc
+  checks them: `"untrusted"`);
 - **time and memory**, which pandoc limits for no filter:
-  `$LIBPANDOC_WASM_TIMEOUT` (seconds, as pandoc-server's `--timeout`; its
-  calls to pandoc included) and `$LIBPANDOC_WASM_MAX_MEMORY` (bytes, or with
-  `k`, `m`, `g`, as pandoc's `+RTS -M`) stop a filter past them, with a
-  `WasmFilterError`; none by default, as pandoc. `WasmFilter(path,
-  timeout=, max_memory=)` for one filter (0: none).
+  `$LIBPANDOC_WASM_TIMEOUT` (seconds, as pandoc-server's `--timeout`) and
+  `$LIBPANDOC_WASM_MAX_MEMORY` (bytes, or with `k`, `m`, `g`, as pandoc's
+  `+RTS -M`) stop a filter past them, with a `WasmFilterError`; none by
+  default, as pandoc. `WasmFilter(path, timeout=, max_memory=)` for one
+  filter (0: none). The time limit covers the filter's calls to pandoc:
+  each runs with the time the filter has left as its `timeout`, one made
+  after that fails at once, and the filter is then stopped. Its memory
+  limit is the filter's own memory, not pandoc's, which its calls use.
 
 ## Reading fragments, from filters
 
