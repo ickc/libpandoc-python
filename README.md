@@ -109,7 +109,9 @@ not filters); a wasm filter can't:
   filter (0: none). The time limit covers the filter's calls to pandoc:
   each runs with the time the filter has left as its `timeout`, one made
   after that fails at once, and the filter is then stopped. Its memory
-  limit is the filter's own memory, not pandoc's, which its calls use.
+  limit is the filter's own memory, not pandoc's, which its calls use, and
+  also caps what it writes to its standard output and to its standard
+  error (passed on to `sys.stderr`), each.
 
 ## Reading fragments, from filters
 

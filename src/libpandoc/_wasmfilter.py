@@ -17,18 +17,25 @@ calls to pandoc included: each runs with the time the filter has left as
 its ``"timeout"``) and a memory limit (the filter's own memory), from
 ``$LIBPANDOC_WASM_TIMEOUT`` (seconds, as pandoc-server's ``--timeout``) and
 ``$LIBPANDOC_WASM_MAX_MEMORY`` (bytes, or with k, m or g, as pandoc's
-``+RTS -M``), or per filter; none by default, as pandoc.
+``+RTS -M``), or per filter; none by default, as pandoc. The memory limit
+also caps what the filter writes to its standard output (kept here until
+it ends) and to its standard error (passed on to ``sys.stderr``), each.
 """
 
 from __future__ import annotations
 
+import codecs
+import contextlib
 import ctypes
+import errno
 import json
+import math
 import os
 import re
+import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
 from ._scripts import filter_env
@@ -36,8 +43,32 @@ from ._scripts import filter_env
 TIMEOUT_VAR = "LIBPANDOC_WASM_TIMEOUT"
 MAX_MEMORY_VAR = "LIBPANDOC_WASM_MAX_MEMORY"
 
-# How often the engine's epoch advances, once a filter has a timeout (seconds).
+# How often the engine's epoch advances, while a filter with a timeout runs (seconds).
 _TICK = 0.01
+# The largest limits wasmtime takes: a deadline in ticks (a u64, with the
+# epoch counted on from it) and a memory size (an i64). A larger one is no
+# limit in practice (2**62 ticks: 10**9 years), and wrapped around before:
+# a time limit of 1e300 s stopped a filter at once.
+_MAX_TICKS = 2**62
+_MAX_BYTES = 2**62
+
+
+def checked_timeout(t: Any, what: str = "timeout") -> float | None:
+    """A time limit, in seconds, 0 or more (None: none, as 0)."""
+    if t is None:
+        return None
+    if isinstance(t, bool) or not isinstance(t, (int, float)) or not 0 <= t < math.inf:
+        raise ValueError(f"{what}: seconds, 0 or more (0: no limit), not {t!r}")
+    return t or None
+
+
+def checked_memory(n: Any, what: str = "max_memory") -> int | None:
+    """A memory limit, in bytes, 0 or more (None: none, as 0)."""
+    if n is None:
+        return None
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        raise ValueError(f"{what}: bytes, 0 or more (0: no limit), not {n!r}")
+    return min(n, _MAX_BYTES) or None
 
 
 def parse_timeout(s: str) -> float | None:
@@ -46,12 +77,9 @@ def parse_timeout(s: str) -> float | None:
     if not s:
         return None
     try:
-        t = float(s)
+        return checked_timeout(float(s), TIMEOUT_VAR)
     except ValueError:
-        t = -1.0
-    if not (0 <= t < float("inf")):
-        raise ValueError(f"{TIMEOUT_VAR}: seconds, not {s!r}")
-    return t or None
+        raise ValueError(f"{TIMEOUT_VAR}: seconds, 0 or more (0: no limit), not {s!r}") from None
 
 
 def parse_memory(s: str) -> int | None:
@@ -63,8 +91,7 @@ def parse_memory(s: str) -> int | None:
     m = re.fullmatch(r"([0-9]+)([kKmMgG]?)", s)
     if m is None:
         raise ValueError(f"{MAX_MEMORY_VAR}: bytes, or with k, m or g, not {s!r}")
-    n = int(m[1]) << {"": 0, "k": 10, "m": 20, "g": 30}[m[2].lower()]
-    return n or None
+    return checked_memory(int(m[1]) << {"": 0, "k": 10, "m": 20, "g": 30}[m[2].lower()])
 
 
 class WasmFilterError(RuntimeError):
@@ -85,6 +112,8 @@ def _wasmtime() -> Any:
 _LOCK = threading.Lock()
 _ENGINE: Any = None
 _CLOCK: threading.Thread | None = None
+_TIMED = 0  # runs with a timeout going on: the clock ticks only while there are some
+_WAKE = threading.Condition(_LOCK)
 
 
 def _engine() -> Any:
@@ -104,27 +133,65 @@ def _engine() -> Any:
         return _ENGINE
 
 
-def _ticking() -> None:
-    """The epoch's clock: a thread advancing it by the time that has
-    passed, in _TICKs (wasm runs without the GIL), started by the first
-    filter with a timeout. By the time passed, not by its sleeps: a system
-    may stretch a short sleep (macOS does), and a limit then came late (a
-    0.3 s one after 1 s)."""
-    global _CLOCK
+@contextlib.contextmanager
+def _ticking() -> Iterator[None]:
+    """While a filter with a timeout runs: the epoch's clock, a thread
+    advancing it by the time that has passed, in _TICKs (wasm runs without
+    the GIL), started by the first such filter, and waiting while none
+    runs (it woke 100 times a second for the process's life). By the time
+    passed, not by its sleeps: a system may stretch a short sleep (macOS
+    does), and a limit then came late (a 0.3 s one after 1 s)."""
+    global _CLOCK, _TIMED
     engine = _engine()
-    with _LOCK:
-        if _CLOCK is None:
-            def tick() -> None:
-                started, done = time.monotonic(), 0
-                while True:
-                    time.sleep(_TICK)
-                    due = int((time.monotonic() - started) / _TICK)
-                    for _ in range(due - done):
-                        engine.increment_epoch()
-                    done = due
 
+    def tick() -> None:
+        while True:
+            with _WAKE:
+                _WAKE.wait_for(lambda: _TIMED > 0)
+            started, done = time.monotonic(), 0
+            while True:
+                time.sleep(_TICK)
+                if _TIMED == 0:
+                    break
+                due = int((time.monotonic() - started) / _TICK)
+                for _ in range(due - done):
+                    engine.increment_epoch()
+                done = due
+
+    with _WAKE:
+        _TIMED += 1
+        if _CLOCK is None:
             _CLOCK = threading.Thread(target=tick, name="wasm-filter-clock", daemon=True)
             _CLOCK.start()
+        _WAKE.notify()
+    try:
+        yield
+    finally:
+        with _WAKE:
+            _TIMED -= 1
+
+
+def _capped(limit: int | None, write: Callable[[bytes], None]) -> tuple[Callable[[bytes], int], list[bool]]:
+    """A filter's standard output or error: each write passed to ``write``
+    until ``limit`` bytes in all; past it, the write fails (EFBIG) and the
+    flag is set. (It must not raise: wasmtime-py prints a callback's
+    exception to sys.stdout.)"""
+    size, over = [0], [False]
+
+    def sink(data: bytes) -> int:
+        if limit is not None and size[0] + len(data) > limit:
+            over[0] = True
+            return -errno.EFBIG
+        size[0] += len(data)
+        write(data)
+        return len(data)
+
+    return sink, over
+
+
+def _to_stderr(decoder: Any, data: bytes) -> None:
+    with contextlib.suppress(AttributeError, OSError, ValueError):  # (none, or closed)
+        sys.stderr.write(decoder.decode(data))
 
 
 class WasmFilter:
@@ -142,7 +209,9 @@ class WasmFilter:
     would grow past ``max_memory`` bytes.
     None (the default) takes what ``$LIBPANDOC_WASM_TIMEOUT`` and
     ``$LIBPANDOC_WASM_MAX_MEMORY`` say when it runs (none if unset); 0 is no
-    limit.
+    limit; a negative one is a ValueError. The memory limit also caps what
+    it writes to its standard output and to its standard error (passed on
+    to ``sys.stderr``), each.
 
     Compiled once (and cached on disk by wasmtime); a fresh instance per
     run. In ``filters=``, a path ending in ``.wasm`` is one too.
@@ -167,6 +236,8 @@ class WasmFilter:
             raise ValueError(f"{self.name}: not a wasm filter: {e}") from None
         self.dirs = [(os.fsdecode(h), g) for h, g in dirs]
         self.writable = writable
+        checked_timeout(timeout)
+        checked_memory(max_memory)
         self.timeout = timeout
         self.max_memory = max_memory
         self._pandoc_version = pandoc_version()  # now, not from inside a conversion
@@ -182,11 +253,14 @@ class WasmFilter:
     def run(self, doc: bytes, ctx: dict[str, Any]) -> bytes:
         wasmtime = _wasmtime()
         timeout = (parse_timeout(os.environ.get(TIMEOUT_VAR, ""))
-                   if self.timeout is None else self.timeout or None)
+                   if self.timeout is None else checked_timeout(self.timeout))
         max_memory = (parse_memory(os.environ.get(MAX_MEMORY_VAR, ""))
-                      if self.max_memory is None else self.max_memory or None)
-        if timeout is not None:
-            _ticking()
+                      if self.max_memory is None else checked_memory(self.max_memory))
+        with _ticking() if timeout is not None else contextlib.nullcontext():
+            return self._run(wasmtime, doc, ctx, timeout, max_memory)
+
+    def _run(self, wasmtime: Any, doc: bytes, ctx: dict[str, Any], timeout: float | None,
+             max_memory: int | None) -> bytes:
         engine = _engine()
 
         wasi = wasmtime.WasiConfig()
@@ -195,8 +269,9 @@ class WasmFilter:
         wasi.env = list(filter_env(ctx, self._pandoc_version).items())
         _stdin_bytes(wasi, doc)
         out: list[bytes] = []
-        wasi.stdout_custom = out.append
-        wasi.inherit_stderr()
+        wasi.stdout_custom, out_over = _capped(max_memory, out.append)
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        wasi.stderr_custom, err_over = _capped(max_memory, lambda b: _to_stderr(decoder, b))
         for host, guest in self.dirs:
             try:
                 wasi.preopen_dir(host, guest, self.writable)
@@ -207,7 +282,7 @@ class WasmFilter:
         store.set_wasi(wasi)
         if max_memory is not None:
             store.set_limits(memory_size=max_memory)
-        ticks = (2**63 if timeout is None else int(-(-timeout // _TICK)) + 1)
+        ticks = _MAX_TICKS if timeout is None else min(int(-(-timeout // _TICK)) + 1, _MAX_TICKS)
         store.set_epoch_deadline(ticks)
         started = time.monotonic()
         clock = _Clock(None if timeout is None else started + timeout)
@@ -242,6 +317,11 @@ class WasmFilter:
         if clock.out_of_time:
             # its time ran out in a call to pandoc: stopped, whatever it did after
             error = failed("", interrupted=True)
+        for over, stream in ((out_over, "output"), (err_over, "error")):
+            if over[0]:  # (the failed write made it fail, whatever it said)
+                error = WasmFilterError(
+                    f"{self.name}: wrote more than its memory limit ({max_memory} bytes, "
+                    f"{MAX_MEMORY_VAR}) to its standard {stream}")
         if error is not None:
             raise error
         return b"".join(out)

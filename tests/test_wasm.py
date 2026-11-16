@@ -167,6 +167,75 @@ def test_limits_are_read_as_pandoc_writes_them():
             parse_memory(bad)
 
 
+def test_limits_out_of_range():
+    """A negative or NaN limit was no limit (wasmtime's -1); one past what
+    wasmtime takes wrapped around: 1e300 s stopped a filter at once, 2**64
+    bytes and a MiB was a MiB."""
+    for kw in ({"timeout": -1}, {"timeout": float("nan")}, {"timeout": float("inf")},
+               {"max_memory": -1}, {"max_memory": 1.5}):
+        with pytest.raises(ValueError, match="0 or more"):
+            WasmFilter(wasm("upper") if WASM else "x.wasm", **kw)
+    for bad in ("nan", "1e999"):
+        with pytest.raises(ValueError):
+            parse_timeout(bad)
+    assert parse_timeout("1e300") == 1e300 and parse_memory(f"{2**40}g") == 2**62
+
+
+@needs_filters
+def test_huge_limits_are_no_limits(monkeypatch):
+    big = "\n\n".join(f"para *{i}*" for i in range(2000))
+    assert failure(WasmFilter(wasm("upper"), timeout=1e300, max_memory=2**64 + (1 << 20)), big) is None
+    monkeypatch.setenv("LIBPANDOC_WASM_TIMEOUT", "1e300")
+    assert failure(wasm("upper"), big) is None
+
+
+# A WASI command writing 64 MiB to a descriptor, in blocks of 64 KiB; it
+# exits with status 7 if a write fails.
+FLOOD = """
+(module
+  (import "wasi_snapshot_preview1" "fd_write" (func $w (param i32 i32 i32 i32) (result i32)))
+  (import "wasi_snapshot_preview1" "proc_exit" (func $exit (param i32)))
+  (memory (export "memory") 2)
+  (func (export "_start") (local $i i32)
+    (i32.store (i32.const 0) (i32.const 65536))
+    (i32.store (i32.const 4) (i32.const 65536))
+    (loop $l
+      (if (call $w (i32.const FD) (i32.const 0) (i32.const 1) (i32.const 8))
+        (then (call $exit (i32.const 7))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br_if $l (i32.lt_u (local.get $i) (i32.const 1024))))))
+"""
+
+
+@pytest.mark.parametrize("fd, stream", [(1, "output"), (2, "error")])
+def test_its_output_is_capped_as_its_memory(tmp_path, capfd, fd, stream):
+    """A filter limited to 16 MiB kept 512 MiB of standard output in this
+    process (its peak 1.7 GiB), and wrote freely to its standard error."""
+    f = tmp_path / "flood.wat"
+    f.write_text(FLOOD.replace("FD", str(fd)))
+    msg = failure(WasmFilter(f, max_memory=16 << 20), "x")
+    assert msg is not None and f"to its standard {stream}" in msg, msg
+    assert len(capfd.readouterr().err) <= 16 << 20
+
+
+@needs_filters
+def test_the_clock_waits_while_no_timed_filter_runs():
+    """It woke 100 times a second for the rest of the process's life."""
+    from libpandoc import _wasmfilter
+
+    assert failure(WasmFilter(wasm("upper"), timeout=5), "x") is None
+    engine, ticks = _wasmfilter._engine(), []
+    tick = engine.increment_epoch
+    engine.increment_epoch = lambda: (ticks.append(1), tick())
+    try:
+        time.sleep(0.3)
+        assert ticks == []
+        assert failure(WasmFilter(wasm("misbehave"), timeout=0.3), "```spin\n```") is not None
+        assert ticks
+    finally:
+        del engine.increment_epoch
+
+
 @needs_filters
 def test_pandocpy_runs_wasm_filters(tmp_path, capfd):
     from libpandoc import cli
