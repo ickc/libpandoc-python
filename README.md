@@ -37,8 +37,9 @@ pandoc.write(f(doc), "plain")
   `PandocTimeoutError` (a `PandocError` and a `TimeoutError`); the process
   goes on. `read_many(..., return_exceptions=True)` keeps the texts read in
   time, each other one's error in its place. It stops pandoc's own code and
-  the JSON filters pandoc runs, not code in this process (a Python filter
-  runs to its end, and the call then fails) nor Lua filters. `run` and
+  the JSON filters pandoc runs (and Python scripts run as subprocesses),
+  not code in this process (a Python filter runs to its end, and the call
+  then fails) nor Lua filters. `run` and
   `pandocpy` have none, as pandoc has none.
 - **Threads:** the GIL is released while pandoc runs, so conversions in
   different threads run in parallel. pandoc runs on one thread per logical
@@ -164,8 +165,13 @@ Python and its packages either way. A script runs as a subprocess instead:
 
 - if its author says so, with a line `# pandocpy: subprocess` near its top;
 - if the user says so: `PANDOCPY_SUBPROCESS=foo.py,bar` (paths, file names,
-  names without `.py`, or `*` for all);
-- if it fails in process: it is run again as a subprocess, with a warning.
+  names without `.py`, or `*` for all).
+
+A script that fails in process fails the conversion (`ScriptFailed`, its
+error chained, saying how to opt out); it is not run again, which would do
+twice what it did. A script that changes the working directory has it
+changed back when it ends. As a subprocess, a script writes to this
+process's standard error, and `timeout=` stops it.
 
 `python -m libpandoc` is the same as `pandocpy`, which is pandoc's command
 line exactly (pandoc's own command tests pass), file names that aren't

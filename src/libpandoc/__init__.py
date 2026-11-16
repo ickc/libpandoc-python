@@ -322,11 +322,11 @@ def convert(
     ``timeout=`` (seconds; libpandoc's option, not pandoc's) stops a
     conversion still running after that long with a ``PandocTimeoutError``;
     the process goes on. It stops pandoc's own code (readers, writers,
-    templates, citeproc) and a JSON filter pandoc runs, but not code in this
-    process or in Lua: a Python filter (a function, or a script run in
-    process or by this package as a subprocess) runs to its end, and the
-    conversion then fails with ``PandocTimeoutError`` when it returns; a Lua
-    filter isn't stopped at all. There is no memory limit: for documents
+    templates, citeproc) and a JSON filter pandoc runs (or this package
+    runs: a Python script as a subprocess), but not code in this process or
+    in Lua: a Python filter (a function, or a script run in process) runs
+    to its end, and the conversion then fails with ``PandocTimeoutError``
+    when it returns; a Lua filter isn't stopped at all. There is no memory limit: for documents
     from someone you don't trust, give the conversion a process of its own
     (or libpandoc.wasm) and a ``timeout``, with ``sandbox=True`` or
     ``untrusted=True`` so that it reads nothing the document names.
