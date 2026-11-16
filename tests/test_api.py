@@ -138,6 +138,14 @@ def test_a_python_filter_runs_to_its_end_past_the_time_limit():
     assert ran == [True] and time.monotonic() - started >= 1
 
 
+def test_read_many_warns_as_convert_does():
+    """Its reader's messages are in its log (libpandoc 1.9; before, on
+    standard error), issued as PandocWarnings."""
+    with pytest.warns(pandoc.PandocWarning, match="Could not load include file") as w:
+        docs = pandoc.read_many(["\\input{no-such-file} x", "y"], "latex")
+    assert len(docs) == 2 and len(w) == 1
+
+
 def test_read_many_keeps_each_texts_error():
     a, loop, c = pandoc.read_many(["a", "\\newcommand{\\a}{\\a}\\a", "c"], "latex",
                                   return_exceptions=True)
