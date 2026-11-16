@@ -460,7 +460,7 @@ def _run(m: Mounts, call: tuple[Any, ...], input: bytes | None,
             result = _call(store, linker.instantiate(store, module), call, input,
                            m.cwd if m.cwd_mounted is not None else NOWHERE, len(callbacks), path)
     except wasmtime.ExitTrap as e:
-        raise _stopped(f"its runtime exited with status {e.code}", max_memory) from None
+        raise _stopped(f"its runtime exited with status {e.code}", max_memory, dirs) from None
     except wasmtime.Trap as e:
         if timeout is not None and e.trap_code == wasmtime.TrapCode.INTERRUPT:
             given = TIMEOUT_VAR if dirs.timeout is None else 'the sandbox\'s "timeout"'
@@ -469,7 +469,8 @@ def _run(m: Mounts, call: tuple[Any, ...], input: bytes | None,
         # Past its memory limit, the module's runtime faults (wasmtime-py
         # can't tell a refused growth from other faults): most likely that.
         oom = max_memory is not None and e.trap_code != wasmtime.TrapCode.STACK_OVERFLOW
-        raise _stopped(str(e).strip().splitlines()[-1].strip(), max_memory if oom else 0) from None
+        raise _stopped(str(e).strip().splitlines()[-1].strip(), max_memory if oom else 0,
+                       dirs) from None
     except (wasmtime.WasmtimeError, ValueError) as e:
         raise _refused(f"libpandoc.wasm stopped: {e}", "Exception") from None
     finally:
@@ -480,12 +481,13 @@ def _run(m: Mounts, call: tuple[Any, ...], input: bytes | None,
     return result, hooks.taken()
 
 
-def _stopped(why: str, max_memory: int | None) -> Exception:
+def _stopped(why: str, max_memory: int | None, dirs: Dirs) -> Exception:
     """The module stopped: ``why``, and most likely out of memory unless
-    ``max_memory`` is 0."""
+    ``max_memory`` is 0; the limit named where it was given."""
     if max_memory == 0:
         return _refused(f"libpandoc.wasm stopped: {why}", "Exception")
-    what = "wasm's 4 GiB" if max_memory is None else f"{max_memory} bytes, {MAX_MEMORY_VAR}"
+    given = MAX_MEMORY_VAR if dirs.max_memory is None else 'the sandbox\'s "max-memory"'
+    what = "wasm's 4 GiB" if max_memory is None else f"{max_memory} bytes, {given}"
     return _refused(f"libpandoc.wasm stopped ({why}), most likely out of memory "
                     f"(its limit: {what})", "Exception")
 

@@ -1005,9 +1005,17 @@ def test_pandocpy_the_memory_limit_stops_a_loop(lab):
     env = {**HERE, "LIBPANDOC_WASM_MAX_MEMORY": "128m"}
     status, _, err = pandocpy(lab, ["-f", "typst", "-t", "plain"],
                               '#let s = "xxxxxxxx"\n#while true { s = s + s }\n', env)
-    assert status != 0 and "out of memory" in err, err
+    assert status != 0 and "out of memory" in err and "LIBPANDOC_WASM_MAX_MEMORY" in err, err
     status, out, err = pandocpy(lab, ["-f", "markdown", "-t", "html"], "*hi*", env)
     assert (status, out) == (0, "<p><em>hi</em></p>\n"), err
+
+
+def test_the_sandboxs_memory_limit_names_itself(lab):
+    """Out of memory, the message names where the limit was given, as
+    libpandoc-rs's."""
+    with pytest.raises(pandoc.PandocError, match='out of memory.*the sandbox\'s "max-memory"'):
+        pandoc.convert('#let s = "xxxxxxxx"\n#while true { s = s + s }\n', from_="typst",
+                       to="plain", sandbox={"read": [], "max-memory": 128 << 20, "timeout": 60})
 
 
 def test_pandocpy_the_time_limit_stops_nested_quotes(lab):
