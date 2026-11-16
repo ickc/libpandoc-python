@@ -20,6 +20,9 @@ def test_versions():
     # libpandoc.h's rule, checked at import (natively and in Pyodide)
     abi, need = pandoc._core.abi_version(), pandoc._core.MIN_ABI_VERSION
     assert need == 1011 and abi // 1000 == need // 1000 and abi >= need
+    # (_wasm.py, Pyodide's _core, has its own copy of the number)
+    wasm = (pathlib.Path(pandoc.__file__).parent / "_wasm.py").read_text(encoding="utf-8")
+    assert f"\nMIN_ABI_VERSION = {need}\n" in wasm
 
 
 @pytest.mark.skipif(not sysconfig.get_config_var("Py_GIL_DISABLED"),
