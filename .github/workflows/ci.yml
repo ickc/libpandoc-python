@@ -49,10 +49,11 @@ jobs:
           # and musl's, for the musllinux wheels
           if [[ $RUNNER_OS == Linux ]]; then files+=("libpandoc-$SUBDIR-musl.tar.gz"); fi
           scripts/fetch-libpandoc.sh "$RUNNER_TEMP/dl" "${files[@]}"
-          mkdir libpandoc && tar -xzf "$RUNNER_TEMP/dl/libpandoc-$SUBDIR.tar.gz" -C libpandoc
+          # (from standard input: on Windows tar reads "D:..." as a host)
+          mkdir libpandoc && tar -xz -C libpandoc < "$RUNNER_TEMP/dl/libpandoc-$SUBDIR.tar.gz"
           echo "LIBPANDOC_PREFIX=$PWD/libpandoc" >> "$GITHUB_ENV"
           if [[ $RUNNER_OS == Linux ]]; then
-            mkdir libpandoc-musl && tar -xzf "$RUNNER_TEMP/dl/libpandoc-$SUBDIR-musl.tar.gz" -C libpandoc-musl
+            mkdir libpandoc-musl && tar -xz -C libpandoc-musl < "$RUNNER_TEMP/dl/libpandoc-$SUBDIR-musl.tar.gz"
           fi
 
       - uses: actions/setup-python@v7
