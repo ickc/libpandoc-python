@@ -344,6 +344,7 @@ print("exits")
 """
 
 
+@pytest.mark.skipif(sys.platform == "emscripten", reason="no processes in Pyodide")
 @pytest.mark.parametrize("mode", ["filter", "long"])
 def test_exit_with_a_call_running_in_a_daemon_thread(mode):
     """The process ends at once and cleanly, the thread inside pandoc or
@@ -356,6 +357,7 @@ def test_exit_with_a_call_running_in_a_daemon_thread(mode):
     assert time.monotonic() - started < 30
 
 
+@pytest.mark.skipif(sys.platform == "emscripten", reason="no subinterpreters in Pyodide")
 @pytest.mark.skipif(sys.version_info < (3, 14), reason="concurrent.interpreters: 3.14")
 def test_a_subinterpreter_is_refused_cleanly():
     """The extension has single-phase initialization: an isolated
