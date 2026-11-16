@@ -186,7 +186,10 @@ unconfined. Wasm filters run in this process too, seeing the same mounts.
 `pandocpy lua` and `pandoc server` are not in the module (status 4). A
 filter that reads fragments with `read(text, ctx.conversion)` or
 `read_many` reads them in pandoc's own sandbox: no files, not even in the
-directories listed ("Reading fragments, from filters").
+directories listed ("Reading fragments, from filters"): every filter
+running in this process is told the conversion is sandboxed (the
+conversion's `sandbox`, and `PANDOC_SANDBOX=true` for scripts and wasm
+filters), where the module tells of pandoc's own sandbox only.
 
 **Limits.** `LIBPANDOC_WASM_TIMEOUT` (seconds) and
 `LIBPANDOC_WASM_MAX_MEMORY` (bytes, or with `k`, `m`, `g`), or for one
@@ -285,16 +288,20 @@ one and 0.015 s in one `read_many`.
 
 **Confined when the conversion is.** Document text read this way may name
 files (LaTeX's `\input`, RST's and Org's includes). When the conversion
-the filter runs in is sandboxed, by pandoc's sandbox (`sandbox=True`) or a
-directory sandbox (`sandbox={...}`, `LIBPANDOC_SANDBOX`), the fragments
-are read in pandoc's own sandbox: they read no files, not even in the
-directories listed (the filter runs in this process, outside them). So
-they are too when that can't be told: for a conversion with no options,
-as `pandocpy`'s filters get (pandoc doesn't tell them about `--sandbox`,
-on the command line or in a defaults file) and a script makes from its
-environment (`Conversion.from_environment()`). A filter that wants the
-files read gives its own options, `read(text, ctx.conversion,
-sandbox=False)`: its code, its choice.
+the filter runs in is sandboxed, by pandoc's sandbox (`sandbox=True`,
+`--sandbox`, a defaults file, `untrusted=True`) or a directory sandbox
+(`sandbox={...}`, `LIBPANDOC_SANDBOX`), the fragments are read in pandoc's
+own sandbox: they read no files, not even in the directories listed (the
+filter runs in this process, outside them). libpandoc tells every filter
+whether pandoc's sandbox is on (the conversion's `sandbox`, from a
+callback's context; `PANDOC_SANDBOX` for scripts, which
+`Conversion.from_environment()` reads), and the directory sandbox tells
+its filters it is. The rule: a read is confined when the conversion's
+`sandbox` is true, or its options ask for a sandbox, or when nothing can
+tell (`sandbox` unknown and no options: a conversion made by hand, or a
+script's under plain pandoc). A filter that wants the files read gives its
+own options, `read(text, ctx.conversion, sandbox=False)`: its code, its
+choice.
 
 ## pandocpy
 

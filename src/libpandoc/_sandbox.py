@@ -26,7 +26,10 @@ The options and arguments go to pandoc untouched. Lua filters run inside;
 filters that are programs (JSON filters) fail, as a PDF engine does; Python
 filters (functions, ``panir.Filter``s, filter scripts) and wasm filters run
 in this process, called back by the module on the calling thread, a wasm
-filter seeing the same directories. Limits: ``$LIBPANDOC_WASM_TIMEOUT`` and
+filter seeing the same directories. They are told that the conversion is
+sandboxed (the context's ``"sandbox"``, ``PANDOC_SANDBOX``: true, where the
+module tells of pandoc's own sandbox only), so that what they read through
+pandoc is read in its sandbox. Limits: ``$LIBPANDOC_WASM_TIMEOUT`` and
 ``$LIBPANDOC_WASM_MAX_MEMORY`` (or the sandbox's ``"timeout"`` and
 ``"max-memory"``), as for wasm filters, counted from the module's start.
 
@@ -365,13 +368,17 @@ class _Hooks:
 
     def run(self, index: int, doc: bytes, context: bytes) -> bytes:
         f = self.callbacks[index]
+        # Told that the conversion is sandboxed: the module tells only of
+        # pandoc's own sandbox, and a filter here runs outside it, so that
+        # what it reads through pandoc is read in pandoc's sandbox.
+        ctx = {**json.loads(context), "sandbox": True}
         if isinstance(f, WasmFilter):  # the same directories, and the working one as "."
             m = self.mounts
             preopens = [(host, g, w) for g, (host, w) in m.mounts.items()]
             if m.cwd_mounted is not None:
                 preopens.append((".", ".", m.cwd_mounted))
-            return f.run(doc, json.loads(context), preopens)
-        return f(doc, context)
+            return f.run(doc, ctx, preopens)
+        return f(doc, json.dumps(ctx).encode())
 
     def define(self, wasmtime: Any, linker: Any) -> None:
         """``libpandoc.filter(index, doc, doc_len, context, context_len, out)``,

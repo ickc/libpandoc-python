@@ -410,7 +410,7 @@ def _callbacks(
         elif path is not None and _scripts.is_python_script(path):
             entries.append({"type": "callback", "index": len(callbacks)})
             callbacks.append(_scripts.callback(
-                path, pandoc_version(), _conversion, options=opts,
+                path, pandoc_version(), options=opts,
                 in_process=_scripts.opted_out(path) is None,
             ))
         else:
@@ -475,7 +475,7 @@ def _callback(group: tuple[Any, ...], opts: Mapping[str, Any] | None) -> Any:
     user_opts = None if opts is None else {k: v for k, v in opts.items() if k != "filters"}
 
     def run(doc_json: bytes, context: bytes) -> bytes:
-        conversion = _conversion(json.loads(context), user_opts)
+        conversion = Conversion.from_context(json.loads(context), user_opts)
         doc = panir.loads(doc_json)
         for f in group:
             if isinstance(f, Filter):
@@ -666,26 +666,17 @@ def read_options(conversion: Conversion, format: str | None = None) -> dict[str,
 
 def _sandboxed(conversion: Conversion) -> bool:
     """Whether a conversion is sandboxed, for what a filter reads through
-    it: its options' ``"sandbox"`` is ``True`` or a directory sandbox
-    (whose filters run in this process, outside it). Or that can't be told,
-    failing closed: a conversion with no options is one this package didn't
-    describe from its options, a filter script's made from its environment
-    (``Conversion.from_environment()``), or a command line's (``pandocpy``,
-    with or without ``--sandbox``: pandoc doesn't tell its filters)."""
+    it (``read_options``): when its ``sandbox`` is ``True`` (pandoc's
+    sandbox, however it was set, as libpandoc tells filters; a directory
+    sandbox, whose filters run in this process outside it, says ``True``
+    too), or its options ask for a sandbox (``"sandbox"``: ``True`` or a
+    directory sandbox), or when that can't be told, failing closed: its
+    ``sandbox`` unknown (``None``: plain pandoc tells its filters nothing)
+    and no options (a conversion made by hand, or by a JSON filter under
+    pandoc from its environment)."""
     options = conversion.options
-    return options is None or options.get("sandbox") not in (None, False)
-
-
-def _conversion(context: Mapping[str, Any], options: Mapping[str, Any] | None) -> Conversion:
-    """The conversion libpandoc describes to an in-process filter."""
-    return Conversion(
-        context.get("format"),
-        input_format=context.get("input-format"),
-        output_format=context.get("output-format"),
-        reader_options=context.get("reader-options"),
-        writer_options=context.get("writer-options"),
-        options=options,
-    )
+    asked = options is not None and options.get("sandbox") not in (None, False)
+    return conversion.sandbox is True or asked or (conversion.sandbox is None and options is None)
 
 
 def write(doc: Pandoc, to: str | None = None,
