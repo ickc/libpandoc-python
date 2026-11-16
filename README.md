@@ -48,11 +48,35 @@ pandoc.write(f(doc), "plain")
   the JSON filters pandoc runs (and Python scripts run as subprocesses),
   not code in this process (a Python filter runs to its end, and the call
   then fails) nor Lua filters. `run` and
-  `pandocpy` have none, as pandoc has none. Ctrl-C (`KeyboardInterrupt`)
-  takes effect when a call returns, or in a Python filter: the time limit
-  is what bounds a call.
+  `pandocpy` have none, as pandoc has none.
+- **Cancelling:** `cancel=` a `CancelToken` on the same functions stops a
+  call when `token.cancel()` is called, from another thread or from a
+  filter: `PandocCancelledError` (a `PandocError`), the process going on.
+  It stops what `timeout` stops (in the directory sandbox, the whole
+  conversion, Lua included). A token stays cancelled, and serves any number
+  of calls, one after another or at once. `untrusted=True` options take no
+  token (libpandoc's rule: a `PandocError`).
+
+  ```python
+  token = pandoc.CancelToken()
+  threading.Timer(5, token.cancel).start()      # a cancel button, a deadline
+  pandoc.convert(text, to="html", cancel=token)
+  ```
+
+  **Ctrl-C** (`KeyboardInterrupt`) stops a call made on the main thread
+  within milliseconds (it cancels the call's token, or one of its own),
+  natively and in the directory sandbox; not one made with `untrusted=True`
+  (no token: Ctrl-C takes effect when it returns), nor `run`. For that,
+  a call on the main thread runs on a helper thread, one for the process,
+  while the main thread waits, where Python delivers Ctrl-C: Python
+  filters pandoc calls back then run on that thread, in a copy of the
+  caller's `contextvars` context (about 8 µs a call, 2.5% of a tiny
+  conversion; a new thread for each call cost 70 µs). Measured: 35 to 60
+  ms from the signal to the process's end, natively and in the sandbox. `pandocpy` dies on Ctrl-C at once, as
+  pandoc does.
 - **Threads:** the GIL is released while pandoc runs, so conversions in
-  different threads run in parallel. pandoc runs on one thread per logical
+  different threads run in parallel. A Python filter runs on the thread
+  that called pandoc (for the main thread, the helper thread above). pandoc runs on one thread per logical
   core this process may use, or `$LIBPANDOC_NUM_THREADS` (read at start,
   like `$OMP_NUM_THREADS`); `num_threads()` tells the number. pandoc
   starts on one thread and grows to that number the first time it runs
@@ -194,7 +218,9 @@ filters), where the module tells of pandoc's own sandbox only.
 **Limits.** `LIBPANDOC_WASM_TIMEOUT` (seconds) and
 `LIBPANDOC_WASM_MAX_MEMORY` (bytes, or with `k`, `m`, `g`), or for one
 call the sandbox's `"timeout"` and `"max-memory"`, stop a conversion past
-them, counted from the module's start; none by default, wasm's 4 GiB at
+them, counted from the module's start (as `cancel=`'s token and Ctrl-C
+stop it: from outside, wasmtime's epoch, which also advances other wasm
+runs' clocks by one tick, 10 ms); none by default, wasm's 4 GiB at
 most. A negative, infinite or NaN one is a `ValueError`. A conversion
 stopped by the time limit raises `PandocTimeoutError`, as one past
 libpandoc's `timeout=` (which works inside too, but doesn't stop Lua);

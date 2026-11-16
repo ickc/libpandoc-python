@@ -720,8 +720,10 @@ end
 
 
 def test_python_filters_run_here(lab):
-    """Python filters run in this process, on the calling thread, inside
-    the conversion; their exception is raised as it is, as natively."""
+    """Python filters run in this process, on the thread running the module
+    (the calling thread; the helper thread for the main thread's calls),
+    inside the conversion; their exception is raised as it is, as
+    natively."""
     threads = []
 
     def upper(doc, conversion):
@@ -729,8 +731,13 @@ def test_python_filters_run_here(lab):
         return pandoc.read(pandoc.write(doc, "plain").replace("hello", "HELLO"))
 
     sandbox = {"read": [str(lab.work)]}
-    assert pandoc.convert("hello", to="plain", filters=[upper], sandbox=sandbox) == "HELLO\n"
-    assert threads == [(threading.get_ident(), "plain")]
+    results = []
+    other = threading.Thread(
+        target=lambda: results.append(pandoc.convert("hello", to="plain", filters=[upper],
+                                                     sandbox=sandbox)))
+    other.start()
+    other.join()
+    assert results == ["HELLO\n"] and threads == [(other.ident, "plain")]
 
     def fails(doc):
         raise KeyError("no")

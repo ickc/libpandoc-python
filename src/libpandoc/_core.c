@@ -396,6 +396,47 @@ core_set_num_threads(PyObject *self, PyObject *args)
     return PyLong_FromLong(r);
 }
 
+/* cancel_token_new() -> int: a token (0: the runtime isn't running) */
+static PyObject *
+core_cancel_token_new(PyObject *self, PyObject *noargs)
+{
+    int64_t t;
+    (void)self; (void)noargs;
+    Py_BEGIN_ALLOW_THREADS
+    t = pandoc_cancel_token_new();
+    Py_END_ALLOW_THREADS
+    return PyLong_FromLongLong((long long)t);
+}
+
+/* cancel(token: int) -> int: 0, or -1 for a number that is no token */
+static PyObject *
+core_cancel(PyObject *self, PyObject *args)
+{
+    long long t;
+    int r;
+    (void)self;
+    if (!PyArg_ParseTuple(args, "L", &t))
+        return NULL;
+    Py_BEGIN_ALLOW_THREADS
+    r = pandoc_cancel((int64_t)t);
+    Py_END_ALLOW_THREADS
+    return PyLong_FromLong(r);
+}
+
+/* cancel_token_free(token: int) */
+static PyObject *
+core_cancel_token_free(PyObject *self, PyObject *args)
+{
+    long long t;
+    (void)self;
+    if (!PyArg_ParseTuple(args, "L", &t))
+        return NULL;
+    Py_BEGIN_ALLOW_THREADS
+    pandoc_cancel_token_free((int64_t)t);
+    Py_END_ALLOW_THREADS
+    Py_RETURN_NONE;
+}
+
 static PyObject *
 core_abi_version(PyObject *self, PyObject *noargs)
 {
@@ -420,6 +461,12 @@ static PyMethodDef core_methods[] = {
      "query(query: bytes) -> (status, output, error_kind, error_message, log)"},
     {"set_num_threads", core_set_num_threads, METH_VARARGS,
      "set_num_threads(n: int) -> int: the number of pandoc's threads, until they have grown; the number in effect"},
+    {"cancel_token_new", core_cancel_token_new, METH_NOARGS,
+     "cancel_token_new() -> int: a cancel token (0: the runtime isn't running)"},
+    {"cancel", core_cancel, METH_VARARGS,
+     "cancel(token: int) -> int: cancel the calls using it (0; -1: no such token)"},
+    {"cancel_token_free", core_cancel_token_free, METH_VARARGS,
+     "cancel_token_free(token: int) -> None: forget a token"},
     {"abi_version", core_abi_version, METH_NOARGS,
      "abi_version() -> int: LIBPANDOC_ABI_VERSION of the loaded library"},
     {NULL, NULL, 0, NULL}

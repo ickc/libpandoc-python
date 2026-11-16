@@ -31,7 +31,8 @@ sandboxed (the context's ``"sandbox"``, ``PANDOC_SANDBOX``: true, where the
 module tells of pandoc's own sandbox only), so that what they read through
 pandoc is read in its sandbox. Limits: ``$LIBPANDOC_WASM_TIMEOUT`` and
 ``$LIBPANDOC_WASM_MAX_MEMORY`` (or the sandbox's ``"timeout"`` and
-``"max-memory"``), as for wasm filters, counted from the module's start.
+``"max-memory"``), as for wasm filters, counted from the module's start. A
+cancel token stops the module from outside, as the time limit does.
 
 The module: ``$LIBPANDOC_WASM``, else libpandoc's release's, downloaded
 once into the user's cache and checked against the release's
@@ -65,6 +66,7 @@ from ._wasmfilter import (
     MAX_MEMORY_VAR,
     TIMEOUT_VAR,
     WasmFilter,
+    Watch,
     engine,
     limit,
     limits,
@@ -428,13 +430,15 @@ def _cstring(mem: Any, store: Any, p: int) -> bytes | None:
 
 
 def _run(m: Mounts, call: tuple[Any, ...], input: bytes | None,
-         callbacks: Sequence[Any], dirs: Dirs) -> tuple[Result, BaseException | None]:
+         callbacks: Sequence[Any], dirs: Dirs,
+         token: Any = None) -> tuple[Result, BaseException | None]:
     """Run ``call`` in a fresh instance of the module seeing the mounts:
     ``("options", bytes)`` (pandoc_convert_filters), ``("args", argv)``
     (pandoc_convert_args) or ``("main", argv, filters_json)`` (pandoc_main:
     its status only); its result as ``_core``'s, and the first exception a
     filter raised (to be raised instead, as natively). A PandocError if the
-    module stopped (its time limit; out of memory) or can't start."""
+    module stopped (its time limit; its cancel ``token``; out of memory) or
+    can't start."""
     timeout, max_memory = limits(dirs.timeout, dirs.max_memory)
     module, path = _module()  # (first: without wasmtime, the setting is refused)
     import wasmtime
@@ -458,34 +462,50 @@ def _run(m: Mounts, call: tuple[Any, ...], input: bytes | None,
     store, linker = wasmtime.Store(engine()), wasmtime.Linker(engine())
     hooks = _Hooks(callbacks, m)
     started = time.monotonic()
+    watch = None
     try:
         store.set_wasi(wasi)
         limit(store, timeout, max_memory)
+        if token is not None:
+            watch = Watch(store, token, timeout)
         linker.define_wasi()
         hooks.define(wasmtime, linker)
         with ticking() if timeout is not None else contextlib.nullcontext():
             result = _call(store, linker.instantiate(store, module), call, input,
                            m.cwd if m.cwd_mounted is not None else NOWHERE, len(callbacks), path)
-    except wasmtime.ExitTrap as e:
-        raise _stopped(f"its runtime exited with status {e.code}", max_memory, dirs) from None
-    except wasmtime.Trap as e:
-        if timeout is not None and e.trap_code == wasmtime.TrapCode.INTERRUPT:
-            given = TIMEOUT_VAR if dirs.timeout is None else 'the sandbox\'s "timeout"'
-            raise _refused(f"the conversion was stopped after {time.monotonic() - started:.1f} s, "
-                           f"its time limit ({given}: {timeout:g})", "Timeout") from None
-        # Past its memory limit, the module's runtime faults (wasmtime-py
-        # can't tell a refused growth from other faults): most likely that.
-        oom = max_memory is not None and e.trap_code != wasmtime.TrapCode.STACK_OVERFLOW
-        raise _stopped(str(e).strip().splitlines()[-1].strip(), max_memory if oom else 0,
-                       dirs) from None
-    except (wasmtime.WasmtimeError, ValueError) as e:
-        raise _refused(f"libpandoc.wasm stopped: {e}", "Exception") from None
+    except (wasmtime.WasmtimeError, wasmtime.Trap, ValueError) as e:
+        raise _failure(e, watch, started, (timeout, max_memory), dirs) from None
     finally:
         # the instance's memory freed now, not when the last traceback
         # through this frame goes
         store.close()
         linker.close()
     return result, hooks.taken()
+
+
+def _failure(e: Exception, watch: Watch | None, started: float,
+             limits: tuple[float | None, int | None], dirs: Dirs) -> Exception:
+    """Why the module stopped, as an error: cancelled, its time limit, its
+    runtime exited or trapped (out of memory, most likely, with a limit)."""
+    import wasmtime
+
+    timeout, max_memory = limits
+    if watch is not None and watch.reason == "cancelled":
+        return _refused("the call was cancelled", "Cancelled")
+    if (watch is not None and watch.reason == "timeout") or (
+            timeout is not None and isinstance(e, wasmtime.Trap)
+            and e.trap_code == wasmtime.TrapCode.INTERRUPT):
+        given = TIMEOUT_VAR if dirs.timeout is None else 'the sandbox\'s "timeout"'
+        return _refused(f"the conversion was stopped after {time.monotonic() - started:.1f} s, "
+                        f"its time limit ({given}: {timeout:g})", "Timeout")
+    if isinstance(e, wasmtime.ExitTrap):
+        return _stopped(f"its runtime exited with status {e.code}", max_memory, dirs)
+    if isinstance(e, wasmtime.Trap):
+        # Past its memory limit, the module's runtime faults (wasmtime-py
+        # can't tell a refused growth from other faults): most likely that.
+        oom = max_memory is not None and e.trap_code != wasmtime.TrapCode.STACK_OVERFLOW
+        return _stopped(str(e).strip().splitlines()[-1].strip(), max_memory if oom else 0, dirs)
+    return _refused(f"libpandoc.wasm stopped: {e}", "Exception")
 
 
 def _stopped(why: str, max_memory: int | None, dirs: Dirs) -> Exception:
@@ -563,13 +583,15 @@ def _noted(r: Result, m: Mounts) -> Result:
 
 def convert(options: Mapping[str, Any], input: bytes | None, dirs: Dirs,
             callbacks: Sequence[Any] = (),
-            dumps: Callable[[Any], bytes] = lambda o: json.dumps(o).encode()) -> Result:
+            dumps: Callable[[Any], bytes] = lambda o: json.dumps(o).encode(),
+            token: Any = None) -> Result:
     """``convert`` in the sandbox: the options as they are but for
-    ``"sandbox"``, with ``"filters"`` naming ``callbacks`` by index."""
+    ``"sandbox"``, with ``"filters"`` naming ``callbacks`` by index; stopped
+    from outside when ``token`` (a ``CancelToken``) is cancelled."""
     opts = {k: v for k, v in options.items() if k != "sandbox"}
     m = Mounts(dirs)
     try:
-        result, error = _run(m, ("options", dumps(opts)), input, callbacks, dirs)
+        result, error = _run(m, ("options", dumps(opts)), input, callbacks, dirs, token)
     finally:
         m.close()
     if error is not None:

@@ -14,7 +14,9 @@ given as keyword arguments with ``_`` for ``-`` (``reference_doc=``,
 ``from_=`` for ``from``) or as a dict (None: not given), and libpandoc's own: ``timeout``
 (seconds; ``PandocTimeoutError``) and ``untrusted``, and this package's
 directory sandbox, ``sandbox={"read": [...], "write": [...]}`` (the
-README's "Security"; ``$LIBPANDOC_SANDBOX`` for ``run``). Warnings pandoc
+README's "Security"; ``$LIBPANDOC_SANDBOX`` for ``run``). ``cancel=`` a
+``CancelToken`` stops a call from another thread (``PandocCancelledError``),
+and Ctrl-C stops a call on the main thread. Warnings pandoc
 reports are issued as ``PandocWarning``; failures raise ``PandocError``.
 """
 
@@ -38,10 +40,13 @@ if sys.platform == "emscripten":  # Pyodide: libpandoc.wasm
     from . import _wasm as _core
 else:
     from . import _core
-from . import _sandbox
+from . import _cancel, _sandbox
+from ._cancel import CancelToken
 from ._wasmfilter import WasmFilter
 
 __all__ = [
+    "CancelToken",
+    "PandocCancelledError",
     "PandocError",
     "PandocTimeoutError",
     "PandocWarning",
@@ -96,9 +101,31 @@ class PandocTimeoutError(PandocError, TimeoutError):
     so that either catches it."""
 
 
+class PandocCancelledError(PandocError):
+    """A call stopped by its ``CancelToken`` (``cancel=``): libpandoc's error
+    kind ``"Cancelled"``."""
+
+
+_ERRORS: dict[str, type[PandocError]] = {"Timeout": PandocTimeoutError,
+                                         "Cancelled": PandocCancelledError}
+
+
 def _error(kind: str | None, message: str | None) -> PandocError:
     kind = kind or "Exception"
-    return (PandocTimeoutError if kind == "Timeout" else PandocError)(kind, message or "")
+    return _ERRORS.get(kind, PandocError)(kind, message or "")
+
+
+def _call(fn: Any, token: CancelToken | None) -> Any:
+    """A call into pandoc, ``fn(token)``, that ``token`` and Ctrl-C stop
+    (``_cancel``). A token cancelled before it starts fails it at once, as
+    libpandoc does; in Pyodide also one cancelled while it ran (there only
+    a filter of the call can)."""
+    if token is not None and token.cancelled:
+        raise PandocCancelledError("Cancelled", "the call was cancelled")
+    result = _cancel.call(fn, token)
+    if sys.platform == "emscripten" and token is not None and token.cancelled:
+        raise PandocCancelledError("Cancelled", "the call was cancelled")
+    return result
 
 
 class PandocWarning(UserWarning):
@@ -310,6 +337,8 @@ def _output(out: bytes, opts: Mapping[str, Any]) -> str | bytes:
 def convert(
     source: Source = None,
     options: Mapping[str, Any] | None = None,
+    *,
+    cancel: CancelToken | None = None,
     **kwargs: Any,
 ) -> str | bytes:
     """Convert ``source`` as ``pandoc`` would with these defaults-file options.
@@ -324,6 +353,12 @@ def convert(
     a ``panir.Conversion``) and change it or return a new one. They run in
     order, in this process, within one pandoc run, as ``--filter`` would. A
     Python filter's exception is raised from ``convert`` as it is.
+
+    ``cancel=`` a ``CancelToken`` stops the conversion when the token is
+    cancelled (from another thread, or a filter), with a
+    ``PandocCancelledError``; on the main thread Ctrl-C stops it (and
+    cancels that token, if given), raising ``KeyboardInterrupt``. What they
+    stop is what ``timeout`` stops.
 
     ``timeout=`` (seconds; libpandoc's option, not pandoc's) stops a
     conversion still running after that long with a ``PandocTimeoutError``;
@@ -345,11 +380,12 @@ def convert(
         convert(options={"input-files": ["a.md"], "output-file": "a.pdf"})
     """
     opts = _options(options, kwargs)
-    return _output(_convert(_input(source, opts, "convert"), opts), opts)
+    return _output(_convert(_input(source, opts, "convert"), opts, cancel), opts)
 
 
-def _convert(source: bytes | None, opts: Mapping[str, Any]) -> bytes:
+def _convert(source: bytes | None, opts: Mapping[str, Any], cancel: CancelToken | None) -> bytes:
     """pandoc's output for these options, filters in Python included."""
+    _cancellable(cancel)
     dirs = _sandbox.from_options(opts)
     filters = opts.get("filters") or ()
     if isinstance(filters, (str, bytes, os.PathLike)):
@@ -357,11 +393,18 @@ def _convert(source: bytes | None, opts: Mapping[str, Any]) -> bytes:
     callbacks, entries = _callbacks(filters, opts)
     if dirs is not None:
         module_opts = {**opts, "filters": entries} if callbacks else opts
-        return _check(*_sandbox.convert(module_opts, source, dirs, callbacks, _dumps))
+        return _check(*_call(
+            lambda t: _sandbox.convert(module_opts, source, dirs, callbacks, _dumps, t), cancel))
     if callbacks:
         pandoc_opts = {**opts, "filters": entries}
-        return _check(*_core.convert_filters(_dumps(pandoc_opts), source, callbacks))
-    return _check(*_core.convert(_dumps(opts), source))
+        return _check(*_call(lambda t: _core.convert_filters(
+            _dumps(_cancel.options(pandoc_opts, t)), source, callbacks), cancel))
+    return _check(*_call(lambda t: _core.convert(_dumps(_cancel.options(opts, t)), source), cancel))
+
+
+def _cancellable(cancel: Any) -> None:
+    if cancel is not None and not isinstance(cancel, CancelToken):
+        raise TypeError(f"cancel= takes a CancelToken, not {type(cancel).__name__}")
 
 
 def _is_python_filter(f: Any) -> bool:
@@ -535,7 +578,8 @@ def _arg(a: str | bytes | os.PathLike[Any]) -> bytes:
 
 
 def read(source: Source = None, from_: str | Conversion | None = None,
-         options: Mapping[str, Any] | None = None, **kwargs: Any) -> Pandoc:
+         options: Mapping[str, Any] | None = None, *, cancel: CancelToken | None = None,
+         **kwargs: Any) -> Pandoc:
     """Parse ``source`` into a document (``panir.Pandoc``).
 
     ``from_`` is a format (default: the options' ``from``, else markdown),
@@ -544,24 +588,25 @@ def read(source: Source = None, from_: str | Conversion | None = None,
     reads its input, as with ``read_many``.
 
     Otherwise other options (``input_files``, reader extensions in
-    ``from_``, ``filters``, ``timeout``, ...) apply as in ``convert``; those
-    about the output (``to``, ``output_file``) are a TypeError.
+    ``from_``, ``filters``, ``timeout``, ``cancel``, ...) apply as in
+    ``convert``; those about the output (``to``, ``output_file``) are a
+    TypeError.
     """
     if isinstance(from_, Conversion):
         if not isinstance(source, (str, bytes)):
             raise TypeError("read(source, conversion) takes the text to read")
         text = source.decode("utf-8") if isinstance(source, bytes) else source
-        return read_many([text], from_, options, **kwargs)[0]
+        return read_many([text], from_, options, cancel=cancel, **kwargs)[0]
     opts = _options(options, kwargs)
     _refuse(opts, ("to", "writer", "output-file"), "read", "it gives the document")
     _format(opts, "from", "reader", from_, "markdown")
     opts["to"] = "json"
-    return panir.loads(_convert(_input(source, opts, "read"), opts))
+    return panir.loads(_convert(_input(source, opts, "read"), opts, cancel))
 
 
 def read_many(sources: Iterable[str], from_: str | Conversion | None = None,
               options: Mapping[str, Any] | None = None, *, return_exceptions: bool = False,
-              **kwargs: Any) -> list[Any]:
+              cancel: CancelToken | None = None, **kwargs: Any) -> list[Any]:
     """Parse many texts, each on its own, in parallel: their documents.
 
     For filters that parse many fragments, such as table cells: one call
@@ -574,7 +619,8 @@ def read_many(sources: Iterable[str], from_: str | Conversion | None = None,
     ``timeout`` (seconds), the whole call's: it returns within about that
     long, a text not read by then failing with ``PandocTimeoutError``.
     Warnings (an include file not found) are issued as ``PandocWarning``, as
-    ``convert``'s.
+    ``convert``'s. ``cancel=`` (a ``CancelToken``) and Ctrl-C stop it as a
+    whole, as ``convert``.
 
     A text that can't be read raises its ``PandocError``, the first one's;
     with ``return_exceptions=True`` (as ``asyncio.gather``'s) each such
@@ -595,8 +641,9 @@ def read_many(sources: Iterable[str], from_: str | Conversion | None = None,
     if isinstance(opts.get("sandbox"), Mapping):
         raise _error("PandocOptionError", 'read_many: a directory sandbox is for conversions '
                      '("sandbox": true reads no files)')
-    request = _dumps({"options": opts, "inputs": texts})
-    out = json.loads(_check(*_core.read_many(request)))
+    _cancellable(cancel)
+    out = json.loads(_check(*_call(lambda t: _core.read_many(
+        _dumps({"options": _cancel.options(opts, t), "inputs": texts})), cancel)))
     docs: list[Any] = []
     for i, j in enumerate(out):
         if "error" in j:
@@ -680,17 +727,18 @@ def _sandboxed(conversion: Conversion) -> bool:
 
 
 def write(doc: Pandoc, to: str | None = None,
-          options: Mapping[str, Any] | None = None, **kwargs: Any) -> str | bytes:
+          options: Mapping[str, Any] | None = None, *, cancel: CancelToken | None = None,
+          **kwargs: Any) -> str | bytes:
     """Render a typed document, as ``convert`` from JSON would, with its
-    options (``timeout`` and the rest). ``to`` is the format (default: the
-    options' ``to``, else html); options about the input (``from_``,
-    ``input_files``) are a TypeError."""
+    options (``timeout``, ``cancel`` and the rest). ``to`` is the format
+    (default: the options' ``to``, else html); options about the input
+    (``from_``, ``input_files``) are a TypeError."""
     opts = _options(options, kwargs)
     _refuse(opts, ("from", "reader", "input-files", "input-file"), "write",
             "its input is the document")
     _format(opts, "to", "writer", to, "html")
     opts["from"] = "json"
-    return convert(panir.dumps(doc).encode(), opts)
+    return convert(panir.dumps(doc).encode(), opts, cancel=cancel)
 
 
 def _check_versions() -> None:

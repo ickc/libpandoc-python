@@ -112,6 +112,51 @@ def limit(store: Any, timeout: float | None, max_memory: int | None) -> None:
         _MAX_TICKS if timeout is None else min(int(-(-timeout // _TICK)) + 1, _MAX_TICKS))
 
 
+def interrupt() -> None:
+    """Advance the epoch (if wasm ran in this process): a store ``Watch``-ed
+    then checks its token at once. (Every other store's deadline comes one
+    tick, 10 ms, nearer.)"""
+    engine = _ENGINE
+    if engine is not None:
+        engine.increment_epoch()
+
+
+class Watch:
+    """A store that a cancel token stops from outside (``interrupt``), or
+    its time limit (checked at each tick of the clock, ``ticking``): its
+    epoch deadline is the next tick, and at each one this callback decides.
+    ``reason``: ``"cancelled"`` or ``"timeout"`` once it stopped the store
+    (its call fails then). Through wasmtime-py's private ``_ffi``, as
+    ``_stdin_bytes``: the callback isn't in its API."""
+
+    def __init__(self, store: Any, token: Any, timeout: float | None) -> None:
+        from wasmtime import _ffi as ffi
+
+        self.reason: str | None = None
+        deadline = None if timeout is None else time.monotonic() + timeout
+        # wasmtime_store_epoch_deadline_callback's function and finalizer
+        fn_type = ctypes.CFUNCTYPE(ctypes.c_size_t, ctypes.POINTER(ffi.wasmtime_context_t),
+                                   ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64),
+                                   ctypes.POINTER(ctypes.c_uint8))
+        finalizer = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+
+        def on_epoch(_context: Any, _data: Any, delta: Any, kind: Any) -> int:
+            if token.cancelled:
+                self.reason = "cancelled"
+            elif deadline is not None and time.monotonic() >= deadline:
+                self.reason = "timeout"
+            else:
+                delta[0], kind[0] = 1, 0  # WASMTIME_UPDATE_DEADLINE_CONTINUE
+                return 0
+            return ctypes.cast(ffi.wasmtime_error_new(b"stopped from outside"),
+                               ctypes.c_void_p).value or 0
+
+        self._callback = fn_type(on_epoch)  # (alive as long as the store: kept here)
+        ffi.wasmtime_store_epoch_deadline_callback(store.ptr(), self._callback, None,
+                                                   ctypes.cast(0, finalizer))
+        store.set_epoch_deadline(1)
+
+
 class WasmFilterError(RuntimeError):
     """A wasm filter failed: it trapped, exited with a nonzero status, or met
     one of its limits."""
