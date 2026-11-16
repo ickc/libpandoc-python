@@ -35,9 +35,12 @@ pandoc.write(f(doc), "plain")
 - **Threads:** the GIL is released while pandoc runs, so conversions in
   different threads run in parallel. pandoc runs on one thread per logical
   core this process may use, or `$LIBPANDOC_NUM_THREADS` (read at start,
-  like `$OMP_NUM_THREADS`); `num_threads()` and `set_num_threads(n)` query
-  and change it. 2000 small conversions from a pool of Python threads run
-  5 times as fast on 16 threads as on one; on a 16-core, 32-thread CPU, 16
+  like `$OMP_NUM_THREADS`); `num_threads()` tells the number. pandoc
+  starts on one thread and grows to that number the first time it runs
+  something in parallel; `set_num_threads(n)` changes the number only
+  before that (after, it changes nothing and returns the number in
+  effect). 2000 small conversions from a pool of Python threads run 5
+  times as fast on 16 threads as on one; on a 16-core, 32-thread CPU, 16
   was as fast as 32.
 - **Untrusted input:** `untrusted=True` accepts only options that read no
   files, write none, fetch nothing and run nothing, with pandoc's sandbox
@@ -163,7 +166,9 @@ or a staged `dist/` prefix):
 LIBPANDOC_PREFIX=/path/to/prefix pip install .
 ```
 
-The extension then finds the library in that prefix when it runs (an
+It needs libpandoc 1.11 or a later 1.x (libpandoc's rule: the same major
+version, a minor at least as large), checked when the package is imported,
+for libpandoc.wasm in Pyodide too. The extension then finds the library in that prefix when it runs (an
 RPATH). `LIBPANDOC_RPATH` sets another, e.g. `$ORIGIN/...` relative to the
 extension, or empty for none (a wheel whose repair tool bundles the
 library). libpandoc-rs reads both variables the same way.

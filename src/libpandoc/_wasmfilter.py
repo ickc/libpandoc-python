@@ -349,16 +349,9 @@ def _refusal(what: str) -> str:
 
 def _untrusted(what: Any) -> dict[str, Any]:
     """What a filter gives pandoc (options, or a query), marked
-    ``"untrusted": true`` for libpandoc (1.7) to check: it accepts only what
+    ``"untrusted": true`` for libpandoc to check: it accepts only what
     reads and writes no files, fetches nothing and runs nothing, and turns
     pandoc's sandbox on. The list is libpandoc's, the same for every host."""
-    from . import _core
-
-    v = _core.abi_version()
-    if v < 1007:
-        raise _Refused(_refusal(
-            f'a call from a wasm filter needs libpandoc 1.7 ("untrusted"), '
-            f"not {v // 1000}.{v % 1000}"))
     if not isinstance(what, dict):
         raise _Refused(_refusal("options that aren't an object"))
     return {**what, "untrusted": True}

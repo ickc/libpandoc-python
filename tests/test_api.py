@@ -13,6 +13,9 @@ import libpandoc as pandoc
 def test_versions():
     assert pandoc.pandoc_version().startswith("3.")
     assert pandoc.pandoc_api_version()[:2] == panir.PANDOC_API_VERSION[:2]
+    # libpandoc.h's rule, checked at import (natively and in Pyodide)
+    abi, need = pandoc._core.abi_version(), pandoc._core.MIN_ABI_VERSION
+    assert need == 1011 and abi // 1000 == need // 1000 and abi >= need
 
 
 @pytest.mark.skipif(not sysconfig.get_config_var("Py_GIL_DISABLED"),
@@ -111,19 +114,21 @@ def test_threads():
 
 def test_num_threads():
     assert pandoc.num_threads() >= 1
-    # Setting the number: in a process of its own, before pandoc's threads
-    # have grown (from libpandoc 1.9 it changes nothing after that, and
-    # another test here may have run calls in parallel already).
+    # Setting the number: in a process of its own, where pandoc's threads
+    # haven't grown yet (it changes nothing after that, and another test
+    # here may have run calls in parallel already).
     import subprocess
     import sys
     code = (
         "import libpandoc as p\n"
         "a = p.set_num_threads(2); b = p.num_threads(); c = p.convert('*x*')\n"
-        "print(a, b, p.set_num_threads(0), c.strip())"
+        "d = p.set_num_threads(0)\n"  # (clamped)
+        "p.set_num_threads(2); p.read_many(['a', 'b'])\n"  # (two texts: grown)
+        "print(a, b, d, c.strip(), p.set_num_threads(1), p.num_threads())"
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     most = min(2, __import__("os").cpu_count() or 1)
-    assert out.stdout.strip() == f"{most} {most} 1 <p><em>x</em></p>"
+    assert out.stdout.strip() == f"{most} {most} 1 <p><em>x</em></p> {most} {most}"
 
 
 def test_num_threads_from_the_environment():
@@ -141,7 +146,6 @@ def test_untrusted(tmp_path):
     # libpandoc's "untrusted": only options that read, write, fetch and run
     # nothing, with pandoc's sandbox on
     assert pandoc.convert("*hi*", to="html", untrusted=True) == "<p><em>hi</em></p>\n"
-    # (citeproc: refused before libpandoc 1.8, which runs it inside the sandbox)
     for opts in ({"filters": ["x.lua"]}, {"output_file": str(tmp_path / "o")},
                  {"to": "pdf"}, {"data_dir": str(tmp_path)}):
         with pytest.raises(pandoc.PandocError, match="not allowed for untrusted code"):

@@ -133,18 +133,35 @@ def query(name: str, **params: Any) -> Any:
 
 
 def num_threads() -> int:
-    """How many threads pandoc runs on: one per logical core this process
-    may use (its CPU affinity), unless ``$LIBPANDOC_NUM_THREADS`` (read at
-    start, like ``$OMP_NUM_THREADS``) or ``set_num_threads`` says otherwise.
-    Conversions from different Python threads, and ``read_many``, run in
-    parallel on them."""
+    """How many threads pandoc runs on, or, before they have grown (below),
+    will run on: one per logical core this process may use (its CPU
+    affinity), unless ``$LIBPANDOC_NUM_THREADS`` (read at start, like
+    ``$OMP_NUM_THREADS``) or ``set_num_threads`` says otherwise; at most one
+    per such core. Conversions from different Python threads, and
+    ``read_many``, run in parallel on them.
+
+    pandoc starts on one thread and grows to that number once, the first
+    time it runs something in parallel: a call starting while another
+    thread's runs, or ``read_many`` with more than one text. In Pyodide,
+    always 1."""
     return int(query("num-threads"))
 
 
 def set_num_threads(n: int) -> int:
-    """Run pandoc on ``n`` threads from now on (at least 1); returns the new
-    number."""
-    return _core.set_num_threads(n)
+    """Set the number of threads pandoc will grow to (``num_threads``),
+    clamped to 1 to one per logical core this process may use; returns the
+    number in effect.
+
+    Only until pandoc's threads have grown: after that it changes nothing
+    and returns the number they grew to (libpandoc does not resize a
+    running pandoc, which hung it now and then). So a result other than
+    ``n`` means that ``n`` was out of range or that it came too late: call
+    it before pandoc first runs anything in parallel, or set
+    ``$LIBPANDOC_NUM_THREADS``."""
+    in_effect = _core.set_num_threads(n)
+    if in_effect < 1:  # (0: libpandoc's runtime has stopped)
+        raise RuntimeError("libpandoc's runtime is not running")
+    return in_effect
 
 
 @functools.cache
