@@ -12,7 +12,9 @@
 Options are pandoc's defaults-file keys (https://pandoc.org/MANUAL.html#defaults-files),
 given as keyword arguments with ``_`` for ``-`` (``reference_doc=``,
 ``from_=`` for ``from``) or as a dict, and libpandoc's own: ``timeout``
-(seconds; ``PandocTimeoutError``) and ``untrusted``. Warnings pandoc
+(seconds; ``PandocTimeoutError``) and ``untrusted``, and this package's
+directory sandbox, ``sandbox={"read": [...], "write": [...]}`` (the
+README's "Security"; ``$LIBPANDOC_SANDBOX`` for ``run``). Warnings pandoc
 reports are issued as ``PandocWarning``; failures raise ``PandocError``.
 """
 
@@ -36,6 +38,7 @@ if sys.platform == "emscripten":  # Pyodide: libpandoc.wasm
     from . import _wasm as _core
 else:
     from . import _core
+from . import _sandbox
 from ._wasmfilter import WasmFilter
 
 __all__ = [
@@ -327,9 +330,13 @@ def convert(
     in Lua: a Python filter (a function, or a script run in process) runs
     to its end, and the conversion then fails with ``PandocTimeoutError``
     when it returns; a Lua filter isn't stopped at all. There is no memory limit: for documents
-    from someone you don't trust, give the conversion a process of its own
-    (or libpandoc.wasm) and a ``timeout``, with ``sandbox=True`` or
-    ``untrusted=True`` so that it reads nothing the document names.
+    from someone you don't trust, ``sandbox={"read": [dirs], "write": [dirs]}``
+    runs the whole conversion in libpandoc.wasm, seeing only those
+    directories, within ``$LIBPANDOC_WASM_TIMEOUT`` and
+    ``$LIBPANDOC_WASM_MAX_MEMORY`` (or the sandbox's ``"timeout"`` and
+    ``"max-memory"``): the README's "Security". Else give it a process of
+    its own and a ``timeout``, with ``sandbox=True`` or ``untrusted=True``
+    so that it reads nothing the document names.
 
         convert("# Hi", from_="markdown", to="docx")
         convert(options={"input-files": ["a.md"], "output-file": "a.pdf"})
@@ -340,10 +347,14 @@ def convert(
 
 def _convert(source: bytes | None, opts: Mapping[str, Any]) -> bytes:
     """pandoc's output for these options, filters in Python included."""
+    dirs = _sandbox.from_options(opts)
     filters = opts.get("filters") or ()
     if isinstance(filters, (str, bytes, os.PathLike)):
         raise TypeError(f"filters is a list, not one filter: filters=[{filters!r}]")
     callbacks, entries = _callbacks(filters, opts)
+    if dirs is not None:
+        module_opts = {**opts, "filters": entries} if callbacks else opts
+        return _check(*_sandbox.convert(module_opts, source, dirs, callbacks, _dumps))
     if callbacks:
         pandoc_opts = {**opts, "filters": entries}
         return _check(*_core.convert_filters(_dumps(pandoc_opts), source, callbacks))
@@ -500,11 +511,16 @@ def run(args: Sequence[str], input: Source = None) -> bytes:
     must be UTF-8 (libpandoc's ``pandoc_convert_args``): a file name that
     isn't is a ValueError (``pandocpy`` takes any). With no ``input`` and
     no input files in the arguments, pandoc reads this process's standard
-    input, as the command does, and closes it.
+    input, as the command does, and closes it. With ``$LIBPANDOC_SANDBOX``
+    or ``$LIBPANDOC_SANDBOX_WRITE`` set, in the directory sandbox (the
+    README's "Security").
     """
     if isinstance(args, (str, bytes)):
         raise TypeError("run() takes a list of arguments, not one string (shlex.split(s))")
-    return _check(*_core.convert_args(tuple(map(_arg, args)), _encode(input)))
+    argv, dirs = tuple(map(_arg, args)), _sandbox.from_env()
+    if dirs is not None:
+        return _check(*_sandbox.convert_args(argv, _encode(input), dirs))
+    return _check(*_core.convert_args(argv, _encode(input)))
 
 
 def _arg(a: str | bytes | os.PathLike[Any]) -> bytes:
@@ -610,7 +626,9 @@ def read_options(conversion: Conversion, format: str | None = None) -> dict[str,
 
     The input format is the one pandoc decided on when known, else the
     options' ``from``, else markdown: pandoc doesn't yet tell JSON filters
-    it runs (jgm/pandoc#11016), though libpandoc does.
+    it runs (jgm/pandoc#11016), though libpandoc does. A directory sandbox
+    (``"sandbox": {...}``) is pandoc's own sandbox here (``True``): a
+    fragment is read in this process, and reads no files.
     """
     opts: dict[str, Any] = {}
     if conversion.options is not None:
@@ -621,6 +639,10 @@ def read_options(conversion: Conversion, format: str | None = None) -> dict[str,
         tc = _TRACK_CHANGES.get(ro.get("track-changes", ""))
         if tc:
             opts["track-changes"] = tc
+    if isinstance(opts.get("sandbox"), Mapping):
+        # a directory sandbox's fragments are read in this process, so in
+        # pandoc's own sandbox: they read no files
+        opts["sandbox"] = True
     given = conversion.options or {}
     opts["from"] = (format or conversion.input_format or given.get("from")
                     or given.get("reader") or "markdown")

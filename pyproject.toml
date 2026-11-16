@@ -19,12 +19,13 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-# wasm filters (-F foo.wasm, WasmFilter), run in process by wasmtime. At least
-# 50: 49's tables of the Python functions wasm calls are changed without a
-# lock, and wasm filters run in several threads at once corrupted them (with
-# the GIL too). Bounded above: a filter's standard input is set through
-# wasmtime-py's private _ffi (_wasmfilter._stdin_bytes), which a major version
-# may change. CI installs the newest wasmtime, so it says when to raise the bound.
+# wasm filters (-F foo.wasm, WasmFilter), run in process by wasmtime, and the
+# directory sandbox (pandoc in libpandoc.wasm under wasmtime). At least 50:
+# 49's tables of the Python functions wasm calls are changed without a lock,
+# and wasm filters run in several threads at once corrupted them (with the GIL
+# too). Bounded above: a filter's standard input is set through wasmtime-py's
+# private _ffi (_wasmfilter._stdin_bytes), which a major version may change.
+# CI installs the newest wasmtime, so it says when to raise the bound.
 wasm = ["wasmtime >=50, <51"]
 
 [project.scripts]

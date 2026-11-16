@@ -225,7 +225,7 @@ def test_the_clock_waits_while_no_timed_filter_runs():
     from libpandoc import _wasmfilter
 
     assert failure(WasmFilter(wasm("upper"), timeout=5), "x") is None
-    engine, ticks = _wasmfilter._engine(), []
+    engine, ticks = _wasmfilter.engine(), []
     tick = engine.increment_epoch
     engine.increment_epoch = lambda: (ticks.append(1), tick())
     try:

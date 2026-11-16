@@ -22,6 +22,11 @@ the user say otherwise (``# pandocpy: subprocess``, ``$PANDOCPY_SUBPROCESS``):
 see ``libpandoc._scripts``. So do wasm filters (``-F foo.wasm``, with
 ``libpandoc[wasm]``), sandboxed: see ``libpandoc.WasmFilter``. Other filters
 run as with pandoc.
+
+With ``$LIBPANDOC_SANDBOX`` or ``$LIBPANDOC_SANDBOX_WRITE`` set, it is the
+pandoc command of libpandoc.wasm, in the directory sandbox those list (see
+``libpandoc._sandbox``): the filters above run in this process as without
+it, Lua filters inside, JSON filters not at all.
 """
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ from collections.abc import Callable, Mapping, Sequence
 from importlib.metadata import PackageNotFoundError, distributions, version
 from typing import Any
 
-from . import PandocError, _callbacks, _core, query
+from . import PandocError, _callbacks, _core, _sandbox, query
 from ._wasmfilter import WasmFilterError
 
 GROUP = "panir.filters"
@@ -97,10 +102,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             callbacks = tuple(cbs)
     sys.stdout.flush()
     sys.stderr.flush()
+    # the bytes of each argument, as the file system's encoding gives them
+    # (pandoc_main decodes them so): any file name works
+    command = tuple(map(os.fsencode, (PROG, *args)))
     try:
-        # the bytes of each argument, as the file system's encoding gives
-        # them (pandoc_main decodes them so): any file name works
-        status = _core.main(tuple(map(os.fsencode, (PROG, *args))), filters_json, callbacks)
+        dirs = _sandbox.from_env()
+        if dirs is not None:
+            status = _sandbox.main(command, filters_json, callbacks, dirs)
+        else:
+            status = _core.main(command, filters_json, callbacks)
     except WasmFilterError as e:
         print(f"{PROG}: {e}", file=sys.stderr)
         return FILTER_FAILED
