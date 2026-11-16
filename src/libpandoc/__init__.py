@@ -430,16 +430,17 @@ def _data_dir(opts: Mapping[str, Any] | None, args: Sequence[str]) -> str | None
     return xdg if os.path.isdir(xdg) else os.path.expanduser("~/.pandoc")
 
 
-_WASM_FILTERS: dict[str, tuple[float, WasmFilter]] = {}
+_WASM_FILTERS: dict[str, tuple[tuple[int, int], WasmFilter]] = {}
 
 
 def _wasm_filter(path: str) -> WasmFilter:
     """A wasm filter by path, compiled once per process (again if the file
-    changes)."""
-    key, mtime = os.path.abspath(path), os.path.getmtime(path)
+    changes: its modification time, to the nanosecond, or its size)."""
+    st = os.stat(path)
+    key, version = os.path.abspath(path), (st.st_mtime_ns, st.st_size)
     cached = _WASM_FILTERS.get(key)
-    if cached is None or cached[0] != mtime:
-        cached = _WASM_FILTERS[key] = (mtime, WasmFilter(path))
+    if cached is None or cached[0] != version:
+        cached = _WASM_FILTERS[key] = (version, WasmFilter(path))
     return cached[1]
 
 

@@ -237,6 +237,20 @@ def test_the_clock_waits_while_no_timed_filter_runs():
 
 
 @needs_filters
+def test_a_filter_replaced_is_compiled_again(tmp_path):
+    """Also when the new file has the old one's modification time (as at
+    a file system's coarse resolution, or a copy keeping times): the old
+    filter ran."""
+    f = tmp_path / "f.wasm"
+    f.write_bytes(Path(wasm("identity")).read_bytes())
+    assert pandoc.convert("hi", to="plain", filters=[str(f)]) == "hi\n"
+    st = f.stat()
+    f.write_bytes(Path(wasm("upper")).read_bytes())
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert pandoc.convert("hi", to="plain", filters=[str(f)]) == "HI\n"
+
+
+@needs_filters
 def test_pandocpy_runs_wasm_filters(tmp_path, capfd):
     from libpandoc import cli
 
