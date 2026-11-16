@@ -523,7 +523,7 @@ def read(source: Source = None, from_: str | Conversion | None = None,
     _refuse(opts, ("to", "writer", "output-file"), "read", "it gives the document")
     _format(opts, "from", "reader", from_, "markdown")
     opts["to"] = "json"
-    return Pandoc.from_json(json.loads(_convert(_input(source, opts, "read"), opts)))
+    return panir.loads(_convert(_input(source, opts, "read"), opts))
 
 
 def read_many(sources: Iterable[str], from_: str | Conversion | None = None,
