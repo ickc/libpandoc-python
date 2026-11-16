@@ -331,3 +331,41 @@ def test_untrusted(tmp_path):
     assert "SECRET" in pandoc.convert(tex, from_="latex", to="plain")
     with pytest.warns(pandoc.PandocWarning, match="Could not load include file"):
         assert "SECRET" not in pandoc.convert(tex, from_="latex", to="plain", untrusted=True)
+
+
+SHUTDOWN = """
+import sys, threading, time, libpandoc as p
+def slow(doc):
+    time.sleep(1)
+work = {"filter": lambda: p.convert("x", filters=[slow]), "long": lambda: p.convert(">" * 12000)}
+threading.Thread(target=work[sys.argv[1]], daemon=True).start()
+time.sleep(0.2)
+print("exits")
+"""
+
+
+@pytest.mark.parametrize("mode", ["filter", "long"])
+def test_exit_with_a_call_running_in_a_daemon_thread(mode):
+    """The process ends at once and cleanly, the thread inside pandoc or
+    inside a Python filter that will want the GIL back."""
+    import subprocess
+    started = time.monotonic()
+    out = subprocess.run([sys.executable, "-c", SHUTDOWN, mode], capture_output=True, text=True,
+                         timeout=60, check=False)
+    assert (out.returncode, out.stdout) == (0, "exits\n"), out.stderr
+    assert time.monotonic() - started < 30
+
+
+@pytest.mark.skipif(sys.version_info < (3, 14), reason="concurrent.interpreters: 3.14")
+def test_a_subinterpreter_is_refused_cleanly():
+    """The extension has single-phase initialization: an isolated
+    interpreter refuses it with an ImportError; this one goes on."""
+    from concurrent import interpreters
+
+    interp = interpreters.create()
+    try:
+        with pytest.raises(interpreters.ExecutionFailed, match="ImportError"):
+            interp.exec("import libpandoc")
+    finally:
+        interp.close()
+    assert pandoc.convert("*y*") == "<p><em>y</em></p>\n"
