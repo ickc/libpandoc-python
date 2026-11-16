@@ -102,13 +102,26 @@ class PandocWarning(UserWarning):
     """A warning from pandoc, e.g. a missing image or unresolved citation."""
 
 
+_HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "")
+
+
+def _caller() -> int:
+    """``warnings.warn``'s stacklevel, called from ``_check``, for the
+    first frame outside this package: the line that called it, through
+    however many of its functions (write calls convert, ...)."""
+    level, frame = 2, sys._getframe(2)
+    while frame is not None and frame.f_code.co_filename.startswith(_HERE):
+        level, frame = level + 1, frame.f_back
+    return level
+
+
 def _check(status: int, output: bytes, kind: str | None, message: str | None,
            log: bytes) -> bytes:
     for msg in json.loads(log or b"[]"):
         level = msg.get("verbosity", "WARNING")
         text = _render_log_message(msg)
         if level == "WARNING":
-            warnings.warn(text, PandocWarning, stacklevel=4)
+            warnings.warn(text, PandocWarning, stacklevel=_caller())
         elif level == "ERROR":
             logger.error(text)
         else:

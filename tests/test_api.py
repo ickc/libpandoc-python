@@ -185,6 +185,22 @@ def test_warnings():
         pandoc.convert("![](does-not-exist.png)", to="docx")
 
 
+def test_a_warning_names_the_line_that_called():
+    """Each function's warnings point at its caller, however many of the
+    package's functions are in between (it was the caller's caller)."""
+    doc = pandoc.read("![](nope.png)")
+    calls = [
+        lambda: pandoc.convert("![](nope.png)", to="docx"),
+        lambda: pandoc.write(doc, "docx"),
+        lambda: pandoc.read(r"\input{nope}", "latex"),
+        lambda: pandoc.read_many([r"\input{nope}"], "latex"),
+    ]
+    for call in calls:
+        with pytest.warns(pandoc.PandocWarning) as w:
+            call()
+        assert (w[0].filename, w[0].lineno) == (__file__, call.__code__.co_firstlineno)
+
+
 # The review's 100,000 nested block quotes: over 15 s without a time limit.
 SLOW = ">" * 100_000
 
