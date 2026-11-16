@@ -232,9 +232,24 @@ def test_read_many_reads_each_on_its_own():
 
 def test_read_many_like_a_conversion():
     conv = panir.Conversion("html", input_format="markdown-smart", options={"tab-stop": 2})
-    assert pandoc.read_options(conv) == {"from": "markdown-smart", "tab-stop": 2}
+    assert pandoc.read_options(conv) == {"from": "markdown-smart", "tab-stop": 2,
+                                         "preserve-tabs": True}
     (doc,) = pandoc.read_many(["'q'"], conv)
     assert panir.stringify(doc) == "'q'"  # -smart: no curly quotes
+
+
+def test_a_filters_read_keeps_tabs_as_pandoc_read():
+    """As Lua's pandoc.read (pandoc 3.14: `CodeBlock "x\\ty"`), not as the
+    pandoc command, which expands them first (`"x   y"`; panflute's
+    convert_text and pypandoc run the command)."""
+    conv = panir.Conversion("html", input_format="markdown", options={})
+    code = lambda d: d.blocks[0].text
+    assert code(pandoc.read("    x\ty\n", conv)) == "x\ty"
+    assert code(pandoc.read_many(["    x\ty\n"], conv)[0]) == "x\ty"
+    assert code(pandoc.read("    x\ty\n", conv, preserve_tabs=False)) == "x   y"
+    # with no conversion: as the command, tabs expanded unless asked
+    assert code(pandoc.read("    x\ty\n")) == "x   y"
+    assert code(pandoc.read_many(["    x\ty\n"])[0]) == "x   y"
 
 
 def test_read_many_errors_name_the_input():

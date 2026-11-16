@@ -28,6 +28,9 @@ pandoc.write(f(doc), "plain")
 
 - **Options** are pandoc's [defaults-file](https://pandoc.org/MANUAL.html#defaults-files)
   keys, as keyword arguments (`_` for `-`, `from_` for `from`) or a dict.
+  A value that is `None` is an absent option, as Lua's `nil` in a table
+  (`timeout=None`: no time limit; in a sandbox, `"timeout": None`: the
+  environment's); a list with `None` in it is an error.
   `read(text, "latex")` and `write(doc, "rst")` take the format as their
   second argument (or `from_=`, `to=`, or in the options); an option a
   function would override or ignore (`read(text, to=...)`, `read_many`'s
@@ -82,7 +85,8 @@ pandoc.write(f(doc), "plain")
   `--top-level-division`, ..., as Lua's `PANDOC_WRITER_OPTIONS`) and, from
   `convert`, the options themselves. A filter may call pandoc itself
   (`convert`, or `read(text, ctx.conversion)` to parse a fragment the way
-  the document was read). Filter scripts and wasm filters get
+  the document was read, in pandoc's sandbox when the conversion is
+  sandboxed: "Reading fragments, from filters"). Filter scripts and wasm filters get
   `PANDOC_WRITER_OPTIONS` in their environment, as libpandoc's JSON
   filters do.
 
@@ -101,11 +105,19 @@ can do anything you can (pandoc's `--sandbox` limits readers and writers,
 not filters); a wasm filter can't:
 
 - **files:** it sees the current directory, read-only (`dirs=`,
-  `writable=` for others); no network, no programs;
+  `writable=` for others); on `pandocpy`'s command line nothing names
+  more, so an include through `..`, or through a link leaving the
+  directory, is a missing file (in the directory sandbox it sees the
+  mounts instead). No network, no programs. In WASI an empty name is the
+  working directory: `open("")` opens a directory, not a missing file;
+- **environment:** only the variables pandoc gives filters
+  (`PANDOC_VERSION`, `PANDOC_READER_OPTIONS`, ...), none of this process's;
 - **calls to pandoc** (libpandoc-rs's `libpandoc` crate, built for wasm):
   in pandoc's sandbox, with no options that read or write files, fetch or
   run anything, and nothing read from the user data directory (libpandoc
-  checks them: `"untrusted"`);
+  checks them: `"untrusted"`). So they read no file, not even one the
+  filter can read itself: citeproc takes the metadata's inline
+  `references`, not a `bibliography` file;
 - **time and memory**, which pandoc limits for no filter:
   `$LIBPANDOC_WASM_TIMEOUT` (seconds, as pandoc-server's `--timeout`) and
   `$LIBPANDOC_WASM_MAX_MEMORY` (bytes, or with `k`, `m`, `g`, as pandoc's
@@ -172,8 +184,9 @@ Python filters (functions, `panir.Filter`s) and Python filter scripts
 this process as they do without the sandbox, called back by the module,
 unconfined. Wasm filters run in this process too, seeing the same mounts.
 `pandocpy lua` and `pandoc server` are not in the module (status 4). A
-filter that reads fragments with `read(text, ctx.conversion)` reads them
-in pandoc's own sandbox: no files.
+filter that reads fragments with `read(text, ctx.conversion)` or
+`read_many` reads them in pandoc's own sandbox: no files, not even in the
+directories listed ("Reading fragments, from filters").
 
 **Limits.** `LIBPANDOC_WASM_TIMEOUT` (seconds) and
 `LIBPANDOC_WASM_MAX_MEMORY` (bytes, or with `k`, `m`, `g`), or for one
@@ -204,6 +217,10 @@ limits).
   two apart where pandoc shows the error (an input file, an AsciiDoc or
   Typst include), though it reads nothing. A template, CSS or bibliography
   reads as missing either way.
+- In WASI an empty file name is the working directory: a Lua filter's
+  `io.open("")` opens it, where natively it is a missing file, and reading
+  it then fails (include-code-files' `include=""` fails the conversion
+  inside, where natively it is an empty block); a wasm filter's likewise.
 - PDF output needs a program and fails, saying so: write LaTeX, HTML or
   Typst and make the PDF outside.
 - `pandocpy --version` says what runs: the module's pandoc
@@ -259,7 +276,25 @@ def cells(code, ctx):
 ```
 
 `read(text, ctx.conversion)` does the same for one text, and
-`read_options(conversion)` gives the options used.
+`read_options(conversion)` gives the options used. Read so, a text keeps
+its tabs, as Lua's `pandoc.read` reads it; the `pandoc` command, and so
+panflute's `convert_text` and pypandoc, first replace them by spaces
+(`preserve_tabs=False` does). A call each costs about 0.3 ms, six times
+`pandoc.read`'s: batch them. amsthm's 738 notes take 0.25 s read one by
+one and 0.015 s in one `read_many`.
+
+**Confined when the conversion is.** Document text read this way may name
+files (LaTeX's `\input`, RST's and Org's includes). When the conversion
+the filter runs in is sandboxed, by pandoc's sandbox (`sandbox=True`) or a
+directory sandbox (`sandbox={...}`, `LIBPANDOC_SANDBOX`), the fragments
+are read in pandoc's own sandbox: they read no files, not even in the
+directories listed (the filter runs in this process, outside them). So
+they are too when that can't be told: for a conversion with no options,
+as `pandocpy`'s filters get (pandoc doesn't tell them about `--sandbox`,
+on the command line or in a defaults file) and a script makes from its
+environment (`Conversion.from_environment()`). A filter that wants the
+files read gives its own options, `read(text, ctx.conversion,
+sandbox=False)`: its code, its choice.
 
 ## pandocpy
 
@@ -296,6 +331,14 @@ Python and its packages either way. A script runs as a subprocess instead:
 - if its author says so, with a line `# pandocpy: subprocess` near its top;
 - if the user says so: `PANDOCPY_SUBPROCESS=foo.py,bar` (paths, file names,
   names without `.py`, or `*` for all).
+
+A script runs afresh for each document, in process too: its globals start
+anew each time (a fresh module namespace), as a JSON filter's would in a
+process of its own; only the modules it imports stay imported, with any
+state they keep. (LibPandoc.jl loads a Julia script once per process, and
+its globals live on: reset them for each document there.) A filter given
+to `convert` as a function or a `panir.Filter` is the same object for
+every conversion: what it keeps lives as long as this process.
 
 A script that fails in process fails the conversion (`ScriptFailed`, its
 error chained, saying how to opt out); it is not run again, which would do
@@ -394,7 +437,12 @@ markdown):
 | of which Python's share (json.loads, from_json, to_json, json.dumps) | 145 |
 
 pandoc's reader and writer dominate. Exchanging the AST as JSON, into
-checked Python objects, costs about 15% over a Lua filter.
+checked Python objects, costs about 15% over a Lua filter. Every filter
+but a Lua one is handed the whole document as pandoc's JSON and hands it
+back, whatever it changes: on a 9.4 MB textbook a filter that does next to
+nothing adds 0.6 s in Python (0.35 s in Rust, 0.37 s as a JSON filter), where a
+Lua filter, given elements as it asks for them, adds 0.09 s; pandoc's own
+encoding and decoding of the JSON is most of it.
 
 ## License
 

@@ -11,7 +11,7 @@
 
 Options are pandoc's defaults-file keys (https://pandoc.org/MANUAL.html#defaults-files),
 given as keyword arguments with ``_`` for ``-`` (``reference_doc=``,
-``from_=`` for ``from``) or as a dict, and libpandoc's own: ``timeout``
+``from_=`` for ``from``) or as a dict (None: not given), and libpandoc's own: ``timeout``
 (seconds; ``PandocTimeoutError``) and ``untrusted``, and this package's
 directory sandbox, ``sandbox={"read": [...], "write": [...]}`` (the
 README's "Security"; ``$LIBPANDOC_SANDBOX`` for ``run``). Warnings pandoc
@@ -165,10 +165,13 @@ def _input(source: Source, opts: Mapping[str, Any], fn: str) -> bytes | None:
 
 
 def _options(options: Mapping[str, Any] | None, kwargs: Mapping[str, Any]) -> dict[str, Any]:
-    opts = dict(options or {})
+    """The options and the keyword arguments (``_`` for ``-``; a keyword
+    wins). A value that is None is an absent option, as Lua's ``nil`` in a
+    table: the key is not there (a keyword None leaves the dict's)."""
+    opts = {k: v for k, v in (options or {}).items() if v is not None}
     for key, value in kwargs.items():
-        key = key.rstrip("_").replace("_", "-")
-        opts[key] = value
+        if value is not None:
+            opts[key.rstrip("_").replace("_", "-")] = value
     return opts
 
 
@@ -589,6 +592,9 @@ def read_many(sources: Iterable[str], from_: str | Conversion | None = None,
     _refuse(opts, sorted(set(opts) - _READ_MANY_OPTIONS), "read_many",
             "it takes only the options that affect reading")
     _format(opts, "from", "reader", None if conversion else from_, "markdown")
+    if isinstance(opts.get("sandbox"), Mapping):
+        raise _error("PandocOptionError", 'read_many: a directory sandbox is for conversions '
+                     '("sandbox": true reads no files)')
     request = _dumps({"options": opts, "inputs": texts})
     out = json.loads(_check(*_core.read_many(request)))
     docs: list[Any] = []
@@ -606,12 +612,12 @@ def read_many(sources: Iterable[str], from_: str | Conversion | None = None,
 # The conversion's options that also apply to reading a fragment of it.
 _READ_OPTIONS = frozenset({
     "abbreviations", "data-dir", "default-image-extension", "indented-code-classes",
-    "preserve-tabs", "resource-path", "sandbox", "strip-comments", "tab-stop",
-    "track-changes",
+    "resource-path", "strip-comments", "tab-stop", "track-changes",
 })
 # What read_many's options may be (libpandoc's list): the others, which
 # libpandoc ignores, are a TypeError here rather than silently ignored.
-_READ_MANY_OPTIONS = _READ_OPTIONS | {"from", "reader", "timeout", "untrusted"}
+_READ_MANY_OPTIONS = _READ_OPTIONS | {"from", "reader", "preserve-tabs", "sandbox", "timeout",
+                                      "untrusted"}
 
 # Reader options (as pandoc gives filters) that have a defaults-file key.
 _READER_OPTIONS = ("default-image-extension", "indented-code-classes", "strip-comments",
@@ -626,9 +632,18 @@ def read_options(conversion: Conversion, format: str | None = None) -> dict[str,
 
     The input format is the one pandoc decided on when known, else the
     options' ``from``, else markdown: pandoc doesn't yet tell JSON filters
-    it runs (jgm/pandoc#11016), though libpandoc does. A directory sandbox
-    (``"sandbox": {...}``) is pandoc's own sandbox here (``True``): a
-    fragment is read in this process, and reads no files.
+    it runs (jgm/pandoc#11016), though libpandoc does.
+
+    When the conversion is sandboxed, or when that can't be told, a fragment
+    is read in pandoc's own sandbox (``"sandbox": True``: it reads no files,
+    as LaTeX's ``\\input`` or an RST or Org include would): see
+    ``_sandboxed``. And the text is read as given, its tabs kept
+    (``"preserve-tabs": True``), as Lua's ``pandoc.read`` reads it: the
+    ``pandoc`` command (and so panflute's ``convert_text``, pypandoc)
+    first replaces them by spaces. Options given to ``read`` or
+    ``read_many`` beside the conversion win over these (``sandbox=False``
+    reads files again, ``preserve_tabs=False`` expands tabs: the filter's
+    author's choice).
     """
     opts: dict[str, Any] = {}
     if conversion.options is not None:
@@ -639,14 +654,26 @@ def read_options(conversion: Conversion, format: str | None = None) -> dict[str,
         tc = _TRACK_CHANGES.get(ro.get("track-changes", ""))
         if tc:
             opts["track-changes"] = tc
-    if isinstance(opts.get("sandbox"), Mapping):
-        # a directory sandbox's fragments are read in this process, so in
-        # pandoc's own sandbox: they read no files
+    opts.pop("sandbox", None)
+    if _sandboxed(conversion):
         opts["sandbox"] = True
+    opts["preserve-tabs"] = True
     given = conversion.options or {}
     opts["from"] = (format or conversion.input_format or given.get("from")
                     or given.get("reader") or "markdown")
     return opts
+
+
+def _sandboxed(conversion: Conversion) -> bool:
+    """Whether a conversion is sandboxed, for what a filter reads through
+    it: its options' ``"sandbox"`` is ``True`` or a directory sandbox
+    (whose filters run in this process, outside it). Or that can't be told,
+    failing closed: a conversion with no options is one this package didn't
+    describe from its options, a filter script's made from its environment
+    (``Conversion.from_environment()``), or a command line's (``pandocpy``,
+    with or without ``--sandbox``: pandoc doesn't tell its filters)."""
+    options = conversion.options
+    return options is None or options.get("sandbox") not in (None, False)
 
 
 def _conversion(context: Mapping[str, Any], options: Mapping[str, Any] | None) -> Conversion:
