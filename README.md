@@ -65,12 +65,10 @@ pandoc.write(f(doc), "plain")
   options from code you don't trust. It bounds neither a document's time
   nor its memory, and there is no memory limit for a call in this process
   (running out of memory ends it). For documents from someone you don't
-  trust: `sandbox=True` (pandoc's `--sandbox`; citeproc too) or
-  `untrusted=True` so that pandoc reads nothing the document names, a
-  `timeout`, and memory of its own (a separate process, or a container
-  with a memory limit). libpandoc-rs's directory sandbox (the whole
-  conversion in libpandoc.wasm under wasmtime, seeing only the directories
-  it is given, its memory capped) is not in this package yet.
+  trust: the **directory sandbox** (below), or `sandbox=True` (pandoc's
+  `--sandbox`; citeproc too) or `untrusted=True` so that pandoc reads
+  nothing the document names, with a `timeout` and memory of its own (a
+  separate process, or a container with a memory limit).
 - **Filters**: `filters=` takes pandoc's (Lua or JSON filter paths,
   `"citeproc"`) and Python ones, mixed, in order. A Python filter is a
   [panir](https://github.com/ickc/panir) `Filter`, or a function that
@@ -119,6 +117,129 @@ not filters); a wasm filter can't:
   limit is the filter's own memory, not pandoc's, which its calls use, and
   also caps what it writes to its standard output and to its standard
   error (passed on to `sys.stderr`), each.
+
+## Security: documents you don't trust
+
+pandoc reads what a document asks for: LaTeX's `\input`, RST, Org,
+AsciiDoc, man and Typst includes, images (embedded with
+`--embed-resources`, in a docx or an EPUB), a `bibliography:` or `csl:`
+in its metadata. Run on a document from elsewhere, it can put any file
+you can read into its output. pandoc's own `--sandbox` (`sandbox=True`)
+is all or nothing: the document reads no file at all, not even its own
+images.
+
+A **directory sandbox** is a container at the level of mounts: pandoc runs
+whole inside libpandoc.wasm under wasmtime (`pip install libpandoc[wasm]`)
+and sees only the directories you list, as a container sees only its
+mounts. It is libpandoc-rs's, with the same settings and rules.
+
+```sh
+LIBPANDOC_SANDBOX=. LIBPANDOC_SANDBOX_WRITE=out pandocpy paper.tex -s -o out/paper.html
+```
+
+```python
+html = pandoc.convert(None, input_files=["paper.tex"], to="html",
+                      sandbox={"read": ["."], "write": ["out"]})
+```
+
+**What is mounted.** The read list (`"read"`, `LIBPANDOC_SANDBOX`) and the
+write list (`"write"`, `LIBPANDOC_SANDBOX_WRITE`, readable too), each
+directory at its own absolute path; the variables are lists as `PATH` is
+(`:`, `;` on Windows), for `run` and `pandocpy`; the option is for
+`convert`, `read` and `write`. A directory that doesn't exist is an error;
+a variable set but empty, or an empty list, mounts nothing. A private
+temporary directory. No network, no programs. Of the environment, only
+`SOURCE_DATE_EPOCH` (for a reproducible docx, odt or epub). Nothing else:
+**not the user data directory, not `PANDOC_DATA_DIRS`**: list them if
+pandoc is to find your templates and filters there. Without wasmtime the
+setting is refused, never ignored.
+
+**Everything pandoc reads must be in a mounted directory**: what the
+document names, and what you name too (input files, template, CSS,
+bibliography, defaults files, Lua filters). Outside, a file is missing.
+Output goes to standard output (the returned value), or into a directory
+of the write list (`output_file`, `extract_media`, `log_file`; `-o`,
+`--extract-media`, `--log`). The options and arguments reach pandoc
+untouched. Listing a directory opens all of it to the document: list the
+document's own directory, not your home.
+
+**Filters.** Lua filters run inside, confined as the document is (in
+plain pandoc a Lua filter can do anything you can). Filters that are
+programs (JSON filters) fail (status 83 in `pandocpy`): wasm starts no
+process, and a filter run outside would read whatever the document names.
+Python filters (functions, `panir.Filter`s) and Python filter scripts
+(`-F foo.py`) are your code, as trusted as the command line: they run in
+this process as they do without the sandbox, called back by the module,
+unconfined. Wasm filters run in this process too, seeing the same mounts.
+`pandocpy lua` and `pandoc server` are not in the module (status 4). A
+filter that reads fragments with `read(text, ctx.conversion)` reads them
+in pandoc's own sandbox: no files.
+
+**Limits.** `LIBPANDOC_WASM_TIMEOUT` (seconds) and
+`LIBPANDOC_WASM_MAX_MEMORY` (bytes, or with `k`, `m`, `g`), or for one
+call the sandbox's `"timeout"` and `"max-memory"`, stop a conversion past
+them, counted from the module's start; none by default, wasm's 4 GiB at
+most. A negative, infinite or NaN one is a `ValueError`. A conversion
+stopped by the time limit raises `PandocTimeoutError`, as one past
+libpandoc's `timeout=` (which works inside too, but doesn't stop Lua);
+one out of memory a `PandocError` saying so. A document can be built to
+take time or memory (Typst's `#while true {}`: 3 GB in 4.5 s natively;
+100,000 nested `>`: over 15 s): set **both** for documents from the
+internet. The memory limit alone does not stop every such document: a
+loop that grows slowly, or not at all, runs on until the time limit. The
+time limit covers pandoc and Lua inside the module, not filters run in
+this process (a Python filter runs to its end; a wasm filter has its own
+limits).
+
+**What to know.**
+
+- `..` from one mounted directory into another fails (each mount resolves
+  alone), in an absolute path too; a path without `..` works.
+- Relative names resolve from the working directory, which must be in a
+  mounted directory; if it isn't, they find nothing and the error says so.
+- On Windows a path with a drive letter means nothing inside: use relative
+  names with `/`, or `/c/...` for `C:\...`.
+- A path leaving a mount by `..` or a symbolic link fails as "permission
+  denied", where a missing file "does not exist": a document can tell the
+  two apart where pandoc shows the error (an input file, an AsciiDoc or
+  Typst include), though it reads nothing. A template, CSS or bibliography
+  reads as missing either way.
+- PDF output needs a program and fails, saying so: write LaTeX, HTML or
+  Typst and make the PDF outside.
+- `pandocpy --version` says what runs: the module's pandoc
+  (`Features: -server -lua`).
+- `read_many` reads in this process: a directory sandbox there is an error.
+
+**What it doesn't protect from:** a hard link inside a mounted directory
+to a file elsewhere (it is that file), and anything else you put in the
+directories; documents built to use time or memory beyond the limits you
+set; your own filters; bugs in wasmtime or in this host.
+
+**The module.** `LIBPANDOC_WASM=/path/to/libpandoc.wasm`, else libpandoc's
+`continuous` release's, downloaded once (about 60 MB) into the user's
+cache (`~/.cache/libpandoc/continuous`; `~/Library/Caches` on macOS,
+`%LOCALAPPDATA%` on Windows) and checked against the release's
+`SHA256SUMS`. A cached module older than this package needs fails, naming
+the file to remove. Its **first compilation takes about 20 s and 8 GB of
+memory**, RAM and swap together (no setting of wasmtime's lowers that;
+with less, the process is killed); wasmtime's cache (`~/.cache/wasmtime`)
+keeps the result (64 MB), and later processes load it in 0.25 s.
+
+**What it costs** (pandoc's MANUAL, markdown to HTML, one run of
+`pandocpy`): 2.1 s and 1.07 GB at most against 0.64 s and 0.36 GB
+natively; in a process that has loaded the module, 1.85 s a conversion
+against 0.25 s, and a small one takes 6 ms. The first run: 19.5 s and
+7.9 GB.
+
+**For real isolation**, run the conversion where only the directory
+exists, a container at least, a virtual machine better:
+
+```sh
+podman run --rm --network=none --read-only --tmpfs /tmp --cap-drop=all \
+  --security-opt=no-new-privileges --memory=2g --cpus=1 \
+  -v "$PWD/doc:/work:ro,Z" -w /work IMAGE \
+  timeout 60 pandocpy main.tex -t html > out.html
+```
 
 ## Reading fragments, from filters
 
@@ -185,7 +306,11 @@ process's standard error, and `timeout=` stops it.
 `python -m libpandoc` is the same as `pandocpy`, which is pandoc's command
 line exactly (pandoc's own command tests pass), file names that aren't
 UTF-8 and `pandocpy lua` (pandoc as a Lua interpreter) included. Only
-`pandoc server` is not supported.
+`pandoc server` is not supported. With `LIBPANDOC_SANDBOX` or
+`LIBPANDOC_SANDBOX_WRITE` set, it is the pandoc command of libpandoc.wasm
+in the directory sandbox (above), on this process's standard input, output
+and error: pandoc's own messages, `--quiet`, `--verbose`, `--log` and
+exit statuses.
 
 ## The AST
 

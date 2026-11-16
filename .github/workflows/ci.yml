@@ -24,6 +24,9 @@ jobs:
   wheel:
     name: wheel (${{ matrix.subdir }})
     runs-on: ${{ matrix.os }}
+    # libpandoc-rs's: three times its longest green job (27 min, compiling
+    # libpandoc.wasm with a cold cache on macOS): a hang fails, not after 6 hours
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -126,7 +129,43 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           "LIBPANDOC_WASM_FILTERS=$env:RUNNER_TEMP/libpandoc-rs/filters/target/wasm32-wasip1/release" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
+      # libpandoc.wasm (~60 MB) for the directory sandbox's tests, and
+      # wasmtime's compilation of it (20 s and 8 GB of memory on a desktop,
+      # minutes on a runner), kept between runs until the release's module or
+      # the newest wasmtime (which the tests install) changes
+      - name: libpandoc.wasm (continuous release), which version
+        id: wasm
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          digest=$(gh release view "$LIBPANDOC_RELEASE" -R "$LIBPANDOC_REPO" --json assets \
+            -q '.assets[] | select(.name == "libpandoc.wasm") | .digest')
+          echo "sha256=${digest#sha256:}" >> "$GITHUB_OUTPUT"
+          wasmtime=$(curl -fsSL https://pypi.org/pypi/wasmtime/json \
+            | "$PY311" -c 'import json, sys; print(json.load(sys.stdin)["info"]["version"])')
+          echo "wasmtime=$wasmtime" >> "$GITHUB_OUTPUT"
+          echo "LIBPANDOC_WASM=$RUNNER_TEMP/libpandoc-wasm/libpandoc.wasm" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        id: wasm-cache
+        with:
+          path: |
+            ${{ runner.temp }}/libpandoc-wasm
+            ~/.cache/wasmtime
+            ~/Library/Caches/BytecodeAlliance.wasmtime
+            ~/AppData/Local/BytecodeAlliance/wasmtime
+          key: libpandoc-wasm-${{ runner.os }}-${{ runner.arch }}-${{ steps.wasm.outputs.sha256 }}-wasmtime-${{ steps.wasm.outputs.wasmtime }}
+      # checked against the release's SHA256SUMS and attestation
+      - name: libpandoc.wasm (download)
+        if: steps.wasm-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/fetch-libpandoc.sh "$RUNNER_TEMP/libpandoc-wasm" libpandoc.wasm
+
       - name: Test the wheel
+        env:
+          # every sandboxed conversion in the tests is limited (pandocpy's set
+          # their own): one that hangs fails in minutes
+          LIBPANDOC_WASM_TIMEOUT: "120"
         run: |
           # outside the source tree, so that the installed package is tested
           for py in "$PY311" "$PY314" "$PY314T" "$PY315"; do

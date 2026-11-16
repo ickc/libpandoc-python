@@ -24,6 +24,7 @@ it ends) and to its standard error (passed on to ``sys.stderr``), each.
 
 from __future__ import annotations
 
+import atexit
 import codecs
 import contextlib
 import ctypes
@@ -94,6 +95,23 @@ def parse_memory(s: str) -> int | None:
     return checked_memory(int(m[1]) << {"": 0, "k": 10, "m": 20, "g": 30}[m[2].lower()])
 
 
+def limits(timeout: Any = None, max_memory: Any = None) -> tuple[float | None, int | None]:
+    """A run's limits: those given, else the environment's (None: none)."""
+    return (parse_timeout(os.environ.get(TIMEOUT_VAR, "")) if timeout is None
+            else checked_timeout(timeout),
+            parse_memory(os.environ.get(MAX_MEMORY_VAR, "")) if max_memory is None
+            else checked_memory(max_memory))
+
+
+def limit(store: Any, timeout: float | None, max_memory: int | None) -> None:
+    """Give a store its limits: its memory, and an epoch deadline (none
+    in practice without a timeout); the clock must tick (``ticking``)."""
+    if max_memory is not None:
+        store.set_limits(memory_size=max_memory)
+    store.set_epoch_deadline(
+        _MAX_TICKS if timeout is None else min(int(-(-timeout // _TICK)) + 1, _MAX_TICKS))
+
+
 class WasmFilterError(RuntimeError):
     """A wasm filter failed: it trapped, exited with a nonzero status, or met
     one of its limits."""
@@ -116,9 +134,11 @@ _TIMED = 0  # runs with a timeout going on: the clock ticks only while there are
 _WAKE = threading.Condition(_LOCK)
 
 
-def _engine() -> Any:
-    """The engine every filter shares: compiled code cached on disk (e.g.
-    ~/.cache/wasmtime), and wasm code checking an epoch, for timeouts."""
+def engine() -> Any:
+    """The engine every filter shares, and libpandoc.wasm in a sandbox:
+    compiled code cached on disk (e.g. ~/.cache/wasmtime), wasm code
+    checking an epoch, for timeouts, and wasm's exception handling (which
+    libpandoc.wasm's Lua is built with)."""
     global _ENGINE
     with _LOCK:
         if _ENGINE is None:
@@ -129,12 +149,22 @@ def _engine() -> Any:
             except wasmtime.WasmtimeError:
                 pass
             config.epoch_interruption = True
+            config.wasm_exceptions = True
             _ENGINE = wasmtime.Engine(config)
+            atexit.register(_drop_engine)
         return _ENGINE
 
 
+def _drop_engine() -> None:
+    """At exit, while wasmtime-py can still free it (later, in the teardown
+    of modules, its finalizer fails and says so)."""
+    global _ENGINE
+    with _LOCK:
+        _ENGINE = None
+
+
 @contextlib.contextmanager
-def _ticking() -> Iterator[None]:
+def ticking() -> Iterator[None]:
     """While a filter with a timeout runs: the epoch's clock, a thread
     advancing it by the time that has passed, in _TICKs (wasm runs without
     the GIL), started by the first such filter, and waiting while none
@@ -142,7 +172,7 @@ def _ticking() -> Iterator[None]:
     passed, not by its sleeps: a system may stretch a short sleep (macOS
     does), and a limit then came late (a 0.3 s one after 1 s)."""
     global _CLOCK, _TIMED
-    engine = _engine()
+    eng = engine()
 
     def tick() -> None:
         while True:
@@ -155,7 +185,7 @@ def _ticking() -> Iterator[None]:
                     break
                 due = int((time.monotonic() - started) / _TICK)
                 for _ in range(due - done):
-                    engine.increment_epoch()
+                    eng.increment_epoch()
                 done = due
 
     with _WAKE:
@@ -231,7 +261,7 @@ class WasmFilter:
         wasmtime = _wasmtime()
         self.name = os.fsdecode(path)
         try:
-            self._module = wasmtime.Module.from_file(_engine(), self.name)
+            self._module = wasmtime.Module.from_file(engine(), self.name)
         except wasmtime.WasmtimeError as e:
             raise ValueError(f"{self.name}: not a wasm filter: {e}") from None
         self.dirs = [(os.fsdecode(h), g) for h, g in dirs]
@@ -250,19 +280,20 @@ class WasmFilter:
         libpandoc gives a callback: as a libpandoc callback."""
         return self.run(doc, json.loads(context))
 
-    def run(self, doc: bytes, ctx: dict[str, Any]) -> bytes:
+    def run(self, doc: bytes, ctx: dict[str, Any],
+            preopens: Sequence[tuple[str, str, bool]] | None = None) -> bytes:
+        """Run the filter on a document (pandoc's JSON) in a conversion
+        (``ctx``: libpandoc's context); ``preopens`` (host, guest, writable)
+        instead of its own directories (a sandboxed conversion's)."""
         wasmtime = _wasmtime()
-        timeout = (parse_timeout(os.environ.get(TIMEOUT_VAR, ""))
-                   if self.timeout is None else checked_timeout(self.timeout))
-        max_memory = (parse_memory(os.environ.get(MAX_MEMORY_VAR, ""))
-                      if self.max_memory is None else checked_memory(self.max_memory))
-        with _ticking() if timeout is not None else contextlib.nullcontext():
-            return self._run(wasmtime, doc, ctx, timeout, max_memory)
+        timeout, max_memory = limits(self.timeout, self.max_memory)
+        if preopens is None:
+            preopens = [(host, guest, self.writable) for host, guest in self.dirs]
+        with ticking() if timeout is not None else contextlib.nullcontext():
+            return self._run(wasmtime, doc, ctx, timeout, max_memory, preopens)
 
     def _run(self, wasmtime: Any, doc: bytes, ctx: dict[str, Any], timeout: float | None,
-             max_memory: int | None) -> bytes:
-        engine = _engine()
-
+             max_memory: int | None, preopens: Sequence[tuple[str, str, bool]]) -> bytes:
         wasi = wasmtime.WasiConfig()
         # (WASI's text: a file name that isn't UTF-8 with U+FFFD)
         wasi.argv = [os.fsencode(self.name).decode("utf-8", "replace"), ctx.get("format") or ""]
@@ -272,21 +303,18 @@ class WasmFilter:
         wasi.stdout_custom, out_over = _capped(max_memory, out.append)
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         wasi.stderr_custom, err_over = _capped(max_memory, lambda b: _to_stderr(decoder, b))
-        for host, guest in self.dirs:
+        for host, guest, writable in preopens:
             try:
-                wasi.preopen_dir(host, guest, self.writable)
+                wasi.preopen_dir(host, guest, writable)
             except (wasmtime.WasmtimeError, UnicodeEncodeError):  # (wasmtime: UTF-8 paths)
                 raise RuntimeError(f"{self.name}: can't give it {host!r}") from None
 
-        store = wasmtime.Store(engine)
+        store = wasmtime.Store(engine())
         store.set_wasi(wasi)
-        if max_memory is not None:
-            store.set_limits(memory_size=max_memory)
-        ticks = _MAX_TICKS if timeout is None else min(int(-(-timeout // _TICK)) + 1, _MAX_TICKS)
-        store.set_epoch_deadline(ticks)
+        limit(store, timeout, max_memory)
         started = time.monotonic()
         clock = _Clock(None if timeout is None else started + timeout)
-        linker = wasmtime.Linker(engine)
+        linker = wasmtime.Linker(engine())
         linker.define_wasi()
         _define_libpandoc(wasmtime, linker, clock)
 
@@ -299,32 +327,39 @@ class WasmFilter:
                 msg += f" (its memory limit: {max_memory} bytes, {MAX_MEMORY_VAR})"
             return WasmFilterError(msg)
 
-        error = None
+        # The store is freed when the run ends: kept by the traceback of
+        # its error (a cycle, through this frame) until the interpreter
+        # exits, its WASI streams' callbacks into Python aborted 3.11 then.
         try:
-            instance = linker.instantiate(store, self._module)
-            start = instance.exports(store).get("_start")
-            if start is None:
-                raise WasmFilterError(f"{self.name}: not a WASI command (no _start)")
-            start(store)
-        except wasmtime.ExitTrap as e:
-            if e.code != 0:
-                error = failed(f"{self.name} exited with status {e.code}")
-        except wasmtime.Trap as e:
-            interrupted = timeout is not None and e.trap_code == wasmtime.TrapCode.INTERRUPT
-            error = failed(f"{self.name}: {e}", interrupted)
-        except wasmtime.WasmtimeError as e:
-            error = failed(f"{self.name}: {e}")
-        if clock.out_of_time:
-            # its time ran out in a call to pandoc: stopped, whatever it did after
-            error = failed("", interrupted=True)
-        for over, stream in ((out_over, "output"), (err_over, "error")):
-            if over[0]:  # (the failed write made it fail, whatever it said)
-                error = WasmFilterError(
-                    f"{self.name}: wrote more than its memory limit ({max_memory} bytes, "
-                    f"{MAX_MEMORY_VAR}) to its standard {stream}")
-        if error is not None:
-            raise error
-        return b"".join(out)
+            error = None
+            try:
+                instance = linker.instantiate(store, self._module)
+                start = instance.exports(store).get("_start")
+                if start is None:
+                    raise WasmFilterError(f"{self.name}: not a WASI command (no _start)")
+                start(store)
+            except wasmtime.ExitTrap as e:
+                if e.code != 0:
+                    error = failed(f"{self.name} exited with status {e.code}")
+            except wasmtime.Trap as e:
+                interrupted = timeout is not None and e.trap_code == wasmtime.TrapCode.INTERRUPT
+                error = failed(f"{self.name}: {e}", interrupted)
+            except wasmtime.WasmtimeError as e:
+                error = failed(f"{self.name}: {e}")
+            if clock.out_of_time:
+                # its time ran out in a call to pandoc: stopped, whatever it did after
+                error = failed("", interrupted=True)
+            for over, stream in ((out_over, "output"), (err_over, "error")):
+                if over[0]:  # (the failed write made it fail, whatever it said)
+                    error = WasmFilterError(
+                        f"{self.name}: wrote more than its memory limit ({max_memory} bytes, "
+                        f"{MAX_MEMORY_VAR}) to its standard {stream}")
+            if error is not None:
+                raise error
+            return b"".join(out)
+        finally:
+            store.close()
+            linker.close()
 
 
 def _stdin_bytes(wasi: Any, data: bytes) -> None:
