@@ -379,7 +379,7 @@ or a staged `dist/` prefix):
 LIBPANDOC_PREFIX=/path/to/prefix pip install .
 ```
 
-It needs libpandoc 1.11 or a later 1.x (libpandoc's rule: the same major
+It needs libpandoc 1.13 or a later 1.x (libpandoc's rule: the same major
 version, a minor at least as large), checked when the package is imported,
 for libpandoc.wasm in Pyodide too. The extension then finds the library in
 that prefix when it runs (an RPATH). `LIBPANDOC_RPATH` sets another, e.g. `$ORIGIN/...` relative to the
