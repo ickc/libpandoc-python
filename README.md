@@ -28,7 +28,12 @@ pandoc.write(f(doc), "plain")
 
 - **Options** are pandoc's [defaults-file](https://pandoc.org/MANUAL.html#defaults-files)
   keys, as keyword arguments (`_` for `-`, `from_` for `from`) or a dict.
-  `run` takes command-line arguments, parsed by pandoc itself.
+  `read(text, "latex")` and `write(doc, "rst")` take the format as their
+  second argument (or `from_=`, `to=`, or in the options); an option a
+  function would override or ignore (`read(text, to=...)`, `read_many`'s
+  options that don't affect reading) is a `TypeError`, as an unknown one
+  is a `PandocError`. `run` takes command-line arguments, parsed by pandoc
+  itself.
 - **Errors** raise `PandocError`, with `kind` set to pandoc's error
   constructor (`"PandocParseError"`, ...). **Warnings** are issued as
   `PandocWarning` (`read_many`'s too).
@@ -37,9 +42,12 @@ pandoc.write(f(doc), "plain")
   `PandocTimeoutError` (a `PandocError` and a `TimeoutError`); the process
   goes on. `read_many(..., return_exceptions=True)` keeps the texts read in
   time, each other one's error in its place. It stops pandoc's own code and
-  the JSON filters pandoc runs, not code in this process (a Python filter
-  runs to its end, and the call then fails) nor Lua filters. `run` and
-  `pandocpy` have none, as pandoc has none.
+  the JSON filters pandoc runs (and Python scripts run as subprocesses),
+  not code in this process (a Python filter runs to its end, and the call
+  then fails) nor Lua filters. `run` and
+  `pandocpy` have none, as pandoc has none. Ctrl-C (`KeyboardInterrupt`)
+  takes effect when a call returns, or in a Python filter: the time limit
+  is what bounds a call.
 - **Threads:** the GIL is released while pandoc runs, so conversions in
   different threads run in parallel. pandoc runs on one thread per logical
   core this process may use, or `$LIBPANDOC_NUM_THREADS` (read at start,
@@ -108,7 +116,9 @@ not filters); a wasm filter can't:
   filter (0: none). The time limit covers the filter's calls to pandoc:
   each runs with the time the filter has left as its `timeout`, one made
   after that fails at once, and the filter is then stopped. Its memory
-  limit is the filter's own memory, not pandoc's, which its calls use.
+  limit is the filter's own memory, not pandoc's, which its calls use, and
+  also caps what it writes to its standard output and to its standard
+  error (passed on to `sys.stderr`), each.
 
 ## Reading fragments, from filters
 
@@ -164,8 +174,13 @@ Python and its packages either way. A script runs as a subprocess instead:
 
 - if its author says so, with a line `# pandocpy: subprocess` near its top;
 - if the user says so: `PANDOCPY_SUBPROCESS=foo.py,bar` (paths, file names,
-  names without `.py`, or `*` for all);
-- if it fails in process: it is run again as a subprocess, with a warning.
+  names without `.py`, or `*` for all).
+
+A script that fails in process fails the conversion (`ScriptFailed`, its
+error chained, saying how to opt out); it is not run again, which would do
+twice what it did. A script that changes the working directory has it
+changed back when it ends. As a subprocess, a script writes to this
+process's standard error, and `timeout=` stops it.
 
 `python -m libpandoc` is the same as `pandocpy`, which is pandoc's command
 line exactly (pandoc's own command tests pass), file names that aren't

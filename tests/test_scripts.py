@@ -2,9 +2,11 @@
 
 import os
 import textwrap
+import time
 
 import pytest
 
+import libpandoc
 from libpandoc import _scripts, cli
 
 PLAIN = """\
@@ -112,24 +114,63 @@ def test_the_user_opts_out(tmp_path, md, capfd, monkeypatch, value):
     assert "pid=" in out and f"pid={os.getpid()}|" not in out
 
 
-def test_a_script_failing_in_process_runs_as_a_subprocess(tmp_path, md, capfd, monkeypatch):
-    """Here it prints to stdout as well as the document, which only works
-    with a process of its own... not really, but it fails in process."""
-    monkeypatch.delenv(_scripts.ENV, raising=False)
-    s = script(tmp_path, "fragile.py", "import sys\nif 'libpandoc' in sys.modules:\n"
-               "    raise RuntimeError('not here')\n" + PLAIN)
-    status, out, err = pandocpy(capfd, "-t", "html", "-F", s, md)
-    assert status == 0, err
-    assert "failed in process (RuntimeError: not here)" in err
-    assert "pid=" in out and f"pid={os.getpid()}|" not in out
+COUNTED = """\
+import json, os, sys
+with open(os.path.join(os.path.dirname(__file__), "runs"), "a") as f:
+    f.write("ran\\n")
+"""
 
 
-def test_a_script_failing_everywhere(tmp_path, md, capfd, monkeypatch):
+def test_a_script_failing_in_process_is_not_run_again(tmp_path, md, monkeypatch):
+    """Its error is the conversion's (it was run again as a subprocess,
+    doing twice what it did, its error then a warning)."""
     monkeypatch.delenv(_scripts.ENV, raising=False)
-    s = script(tmp_path, "broken.py", "import sys\nsys.exit(3)\n")
+    s = script(tmp_path, "fragile.py", COUNTED + "raise RuntimeError('a bug')\n")
+    with pytest.raises(_scripts.ScriptFailed, match="fragile.py failed .RuntimeError: a bug.") as e:
+        libpandoc.convert(input_files=[md], filters=[s])
+    assert isinstance(e.value.__cause__, RuntimeError)
+    assert "# pandocpy: subprocess" in str(e.value)
+    assert (tmp_path / "runs").read_text() == "ran\n"
+
+
+def test_a_script_exiting_with_an_error(tmp_path, md, capfd, monkeypatch):
+    monkeypatch.delenv(_scripts.ENV, raising=False)
+    s = script(tmp_path, "broken.py", COUNTED + "print('broken: bad input', file=sys.stderr)\n"
+               "sys.exit(3)\n")
     status, _, err = pandocpy(capfd, "-t", "html", "-F", s, md)
     assert status == cli.FILTER_FAILED
-    assert "returned error status 3" in err
+    assert "broken.py failed (it exited with 3)" in err
+    assert err.count("broken: bad input") == 1 and (tmp_path / "runs").read_text() == "ran\n"
+
+
+def test_a_script_writing_no_document(tmp_path, md, monkeypatch):
+    monkeypatch.delenv(_scripts.ENV, raising=False)
+    s = script(tmp_path, "quiet.py", "import sys\nsys.stdin.read()\n")
+    with pytest.raises(_scripts.ScriptFailed, match="it wrote no document"):
+        libpandoc.convert(input_files=[md], filters=[s])
+
+
+def test_a_script_changing_the_working_directory(tmp_path, md, capfd, monkeypatch):
+    """The output file is written where it was named, as with pandoc,
+    where the filter's process has its own working directory."""
+    monkeypatch.delenv(_scripts.ENV, raising=False)
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path)
+    s = script(tmp_path, "cd.py", "import os\nos.chdir('elsewhere')\n" + PLAIN)
+    status, _, err = pandocpy(capfd, "-F", s, md, "-o", "out.html")
+    assert status == 0, err
+    assert (tmp_path / "out.html").exists() and not (tmp_path / "elsewhere" / "out.html").exists()
+    assert os.getcwd() == str(tmp_path)
+
+
+def test_a_subprocess_script_is_stopped_by_the_time_limit(tmp_path, md, monkeypatch):
+    """As libpandoc stops a JSON filter (a script in process runs to its
+    end: Python can't be stopped from outside)."""
+    s = script(tmp_path, "slow.py", "# pandocpy: subprocess\nimport time\ntime.sleep(60)\n")
+    started = time.monotonic()
+    with pytest.raises(libpandoc.PandocTimeoutError, match="slow.py stopped after 0.5 s"):
+        libpandoc.convert(input_files=[md], filters=[s], timeout=0.5)
+    assert time.monotonic() - started < 30
 
 
 def test_panflute_script(tmp_path, md, capfd, monkeypatch):

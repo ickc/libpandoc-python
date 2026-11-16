@@ -24,7 +24,10 @@ from it, so that another script's module of the same name (two filters each
 with a ``util.py``) is that script's own. ``__file__`` is the script's
 absolute path, ``__name__`` is ``"__main__"`` and ``__spec__`` ``None``, the
 working directory is this process's: all as ``python script.py`` has them.
-What differs, as it would for any code run in a process already running:
+A script that changes the working directory has it changed back when it
+ends, as its own process would (pandoc's output file, named relative to
+it, is written where it was named). What differs, as it would for any code
+run in a process already running:
 
 - ``sys.argv[0]`` is the absolute path too (``runpy`` sets it to
   ``__file__``), where ``python script.py`` has the path as given;
@@ -35,9 +38,10 @@ What differs, as it would for any code run in a process already running:
   ``sys.modules``: each sees the other's folder on the path while both
   run, and two such scripts' modules of the same name are one;
 - what a script changes in the process stays changed: its own ``sys.path``
-  entries, the working directory, ``sys.setrecursionlimit``, logging and
-  warnings filters, modules it imported from elsewhere; ``atexit``
-  handlers run when this process exits, not when the script ends;
+  entries, ``os.environ`` (outside pandoc's variables), ``sys.setrecursionlimit``,
+  logging and warnings filters, modules it imported from elsewhere, threads
+  it started; ``atexit`` handlers run when this process exits, not when the
+  script ends; and while it runs, other threads see its working directory;
 - ``sys.modules["__main__"]`` is the script's module only while it runs
   (``runpy``'s), and ``__loader__`` is ``None``.
 
@@ -48,9 +52,18 @@ it runs as a subprocess:
 - when its author says so, with a line ``# pandocpy: subprocess`` near its
   top (for scripts that need a process of their own);
 - when the user says so: ``PANDOCPY_SUBPROCESS=foo.py,bar`` (paths, file
-  names or names without ``.py``; ``*`` for all);
-- when it fails in process: it is run again as a subprocess, on the same
-  document, with a warning.
+  names or names without ``.py``; ``*`` for all).
+
+A script that fails in process (an exception, a nonzero ``sys.exit``, no
+document written) fails the conversion with ``ScriptFailed``, its error
+chained; it is not run again (what it did, it would do twice, and its own
+error would be hidden). Its message says how to opt out, for a script that
+fails only in process: one reading descriptor 0, or writing to
+``sys.__stdout__``.
+
+As a subprocess, its standard error is this process's (as pandoc runs a
+JSON filter), and a conversion's ``timeout`` stops it (as libpandoc stops
+the JSON filters it runs), with a ``PandocTimeoutError``.
 """
 
 from __future__ import annotations
@@ -108,8 +121,8 @@ def opted_out(path: str, env: Mapping[str, str] | None = None) -> str | None:
     return None
 
 
-class ScriptFailed(Exception):
-    pass
+class ScriptFailed(RuntimeError):
+    """A Python filter script failed."""
 
 
 def filter_env(ctx: Mapping[str, Any], pandoc_version: str) -> dict[str, str]:
@@ -144,28 +157,30 @@ def callback(
     options: Mapping[str, Any] | None = None,
     in_process: bool = True,
 ) -> Any:
-    """A libpandoc callback running the script ``path`` in this process
-    (falling back to a subprocess), or as a subprocess; with this Python
-    either way, rather than whichever ``python`` is on ``PATH``."""
+    """A libpandoc callback running the script ``path`` in this process,
+    or as a subprocess (stopped after the options' ``timeout``); with this
+    Python either way, rather than whichever ``python`` is on ``PATH``."""
+    timeout = (options or {}).get("timeout")
+    if not (isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0):
+        timeout = None
 
     def run(doc: bytes, context: bytes) -> bytes:
         ctx = json.loads(context)
         env = filter_env(ctx, pandoc_version)
         fmt = ctx.get("format") or ""
         if not in_process:
-            return subprocess_run(path, doc, fmt, env)
+            return subprocess_run(path, doc, fmt, env, timeout)
         try:
             return _in_process(
                 path, doc, fmt, env, lambda fs: _run_filters(fs, doc, ctx, conversion, options)
             )
         except Exception as e:  # noqa: BLE001  whatever the script raised
-            print(
-                f"[WARNING] {path} failed in process ({type(e).__name__}: {e}); "
-                f"running it as a subprocess. If it needs a process of its own, add the "
-                f"line '# pandocpy: subprocess' to it, or set {ENV}={Path(path).name}.",
-                file=sys.stderr,
-            )
-            return subprocess_run(path, doc, fmt, env)
+            why = str(e) if isinstance(e, ScriptFailed) else f"{type(e).__name__}: {e}"
+            raise ScriptFailed(
+                f"{path} failed ({why}). It ran in this process: if it needs one of its "
+                f"own, add the line '# pandocpy: subprocess' to it, or set "
+                f"{ENV}={Path(path).name}."
+            ) from (None if isinstance(e, ScriptFailed) else e)
 
     return run
 
@@ -192,6 +207,7 @@ def _in_process(
     filters: list[panir.Filter] = []
     out = io.BytesIO()
     token = panir.filter.handoff.set(filters.append)
+    cwd = os.getcwd()
     with _redirected(
         stdin=io.TextIOWrapper(io.BytesIO(doc), encoding="utf-8"),
         stdout=io.TextIOWrapper(out, encoding="utf-8", write_through=True),
@@ -212,13 +228,16 @@ def _in_process(
             result = out.getvalue()
         finally:
             panir.filter.handoff.reset(token)
+            if os.getcwd() != cwd:
+                os.chdir(cwd)
     if filters:
         return handed(filters)
-    try:
-        json.loads(result)
-    except ValueError:
-        raise ScriptFailed("its output isn't a document (pandoc's JSON)") from None
+    if not _DOCUMENT.match(result):  # (pandoc reads it, and says what is wrong in it)
+        raise ScriptFailed("it wrote no document (pandoc's JSON) to its standard output")
     return result
+
+
+_DOCUMENT = re.compile(rb"\s*\{")
 
 
 @contextlib.contextmanager
@@ -389,16 +408,25 @@ class _Environ(os._Environ):  # type: ignore[name-defined]
         return dict(self)
 
 
-def subprocess_run(path: str, doc: bytes, fmt: str, env: Mapping[str, str]) -> bytes:
-    """As pandoc runs a Python JSON filter (with this Python)."""
-    proc = subprocess.run(
-        [sys.executable, path, fmt],
-        input=doc,
-        capture_output=True,
-        env={**os.environ, **env},
-        check=False,
-    )
-    sys.stderr.write(proc.stderr.decode("utf-8", "replace"))
+def subprocess_run(path: str, doc: bytes, fmt: str, env: Mapping[str, str],
+                   timeout: float | None = None) -> bytes:
+    """As pandoc runs a Python JSON filter (with this Python): its standard
+    error this process's; stopped after ``timeout`` seconds."""
+    try:
+        proc = subprocess.run(
+            [sys.executable, path, fmt],
+            input=doc,
+            stdout=subprocess.PIPE,
+            env={**os.environ, **env},
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        from . import PandocTimeoutError
+
+        raise PandocTimeoutError(
+            "Timeout", f"{path} stopped after {timeout} s, the conversion's time limit"
+        ) from None
     if proc.returncode != 0:
-        raise RuntimeError(f"{path} returned error status {proc.returncode}")
+        raise ScriptFailed(f"{path} returned error status {proc.returncode}")
     return proc.stdout
