@@ -19,8 +19,11 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-# wasm filters (-F foo.wasm, WasmFilter), run in process by wasmtime
-wasm = ["wasmtime >=49"]
+# wasm filters (-F foo.wasm, WasmFilter), run in process by wasmtime. Bounded
+# above: a filter's standard input is set through wasmtime-py's private _ffi
+# (_wasmfilter._stdin_bytes), which a major version may change. Tested with 49
+# and 50; CI installs the newest wasmtime, so it says when to raise the bound.
+wasm = ["wasmtime >=49, <51"]
 
 [project.scripts]
 pandocpy = "libpandoc.cli:run_main"
