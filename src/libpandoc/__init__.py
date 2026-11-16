@@ -11,8 +11,9 @@
 
 Options are pandoc's defaults-file keys (https://pandoc.org/MANUAL.html#defaults-files),
 given as keyword arguments with ``_`` for ``-`` (``reference_doc=``,
-``from_=`` for ``from``) or as a dict. Warnings pandoc reports are issued as
-``PandocWarning``; failures raise ``PandocError``.
+``from_=`` for ``from``) or as a dict, and libpandoc's own: ``timeout``
+(seconds; ``PandocTimeoutError``) and ``untrusted``. Warnings pandoc
+reports are issued as ``PandocWarning``; failures raise ``PandocError``.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from ._wasmfilter import WasmFilter
 
 __all__ = [
     "PandocError",
+    "PandocTimeoutError",
     "PandocWarning",
     "WasmFilter",
     "convert",
@@ -79,6 +81,21 @@ class PandocError(Exception):
     def __str__(self) -> str:
         return f"{self.kind}: {self.message}"
 
+    def __reduce__(self) -> tuple[Any, ...]:  # (pickled, e.g. by multiprocessing)
+        return type(self), (self.kind, self.message)
+
+
+class PandocTimeoutError(PandocError, TimeoutError):
+    """A call stopped by its time limit (the option ``timeout``, seconds):
+    libpandoc's error kind ``"Timeout"``. Both a ``PandocError`` and a
+    ``TimeoutError`` (so an ``OSError``, as Python's other time limits are),
+    so that either catches it."""
+
+
+def _error(kind: str | None, message: str | None) -> PandocError:
+    kind = kind or "Exception"
+    return (PandocTimeoutError if kind == "Timeout" else PandocError)(kind, message or "")
+
 
 class PandocWarning(UserWarning):
     """A warning from pandoc, e.g. a missing image or unresolved citation."""
@@ -96,7 +113,7 @@ def _check(status: int, output: bytes, kind: str | None, message: str | None,
         else:
             logger.info(text)
     if status != 0:
-        raise PandocError(kind or "Exception", message or "")
+        raise _error(kind, message)
     return output
 
 
@@ -244,6 +261,18 @@ def convert(
     a ``panir.Conversion``) and change it or return a new one. They run in
     order, in this process, within one pandoc run, as ``--filter`` would. A
     Python filter's exception is raised from ``convert`` as it is.
+
+    ``timeout=`` (seconds; libpandoc's option, not pandoc's) stops a
+    conversion still running after that long with a ``PandocTimeoutError``;
+    the process goes on. It stops pandoc's own code (readers, writers,
+    templates, citeproc) and a JSON filter pandoc runs, but not code in this
+    process or in Lua: a Python filter (a function, or a script run in
+    process or by this package as a subprocess) runs to its end, and the
+    conversion then fails with ``PandocTimeoutError`` when it returns; a Lua
+    filter isn't stopped at all. There is no memory limit: for documents
+    from someone you don't trust, give the conversion a process of its own
+    (or libpandoc.wasm) and a ``timeout``, with ``sandbox=True`` or
+    ``untrusted=True`` so that it reads nothing the document names.
 
         convert("# Hi", from_="markdown", to="docx")
         convert(options={"input-files": ["a.md"], "output-file": "a.pdf"})
@@ -430,7 +459,7 @@ def read(source: Source = None, from_: str | Conversion = "markdown", /,
     conversion reads its input, as with ``read_many``.
 
     Otherwise other options (``input_files``, reader extensions in
-    ``from_``, Lua ``filters``, ...) apply as in ``convert``.
+    ``from_``, Lua ``filters``, ``timeout``, ...) apply as in ``convert``.
     """
     if isinstance(from_, Conversion):
         if not isinstance(source, (str, bytes)):
@@ -445,7 +474,8 @@ def read(source: Source = None, from_: str | Conversion = "markdown", /,
 
 
 def read_many(sources: Iterable[str], from_: str | Conversion = "markdown", /,
-              options: Mapping[str, Any] | None = None, **kwargs: Any) -> list[Pandoc]:
+              options: Mapping[str, Any] | None = None, *, return_exceptions: bool = False,
+              **kwargs: Any) -> list[Any]:
     """Parse many texts, each on its own, in parallel: their documents.
 
     For filters that parse many fragments, such as table cells: one call
@@ -453,7 +483,16 @@ def read_many(sources: Iterable[str], from_: str | Conversion = "markdown", /,
     cores, much cheaper than a ``read`` each. ``from_`` is a format, or the
     conversion a filter runs in (``ctx.conversion``), to read the way it
     reads its input. Options that affect reading apply (``tab_stop``,
-    ``abbreviations``, ``resource_path``, ...).
+    ``abbreviations``, ``resource_path``, ``sandbox``, ...), and
+    ``timeout`` (seconds), the whole call's: it returns within about that
+    long, a text not read by then failing with ``PandocTimeoutError``.
+    Warnings (an include file not found) are issued as ``PandocWarning``, as
+    ``convert``'s.
+
+    A text that can't be read raises its ``PandocError``, the first one's;
+    with ``return_exceptions=True`` (as ``asyncio.gather``'s) each such
+    error is in the list in its text's place instead, the others' documents
+    kept.
 
         docs = libpandoc.read_many(cells, ctx.conversion)
     """
@@ -462,12 +501,15 @@ def read_many(sources: Iterable[str], from_: str | Conversion = "markdown", /,
     opts.update(_options(options, kwargs))
     request = _dumps({"options": opts, "inputs": texts})
     out = json.loads(_check(*_core.read_many(request)))
-    docs = []
+    docs: list[Any] = []
     for i, j in enumerate(out):
         if "error" in j:
-            e = j["error"]
-            raise PandocError(e["kind"], f"reading input {i}: {e['message']}")
-        docs.append(Pandoc.from_json(j))
+            e = _error(j["error"].get("kind"), f"reading input {i}: {j['error'].get('message')}")
+            if not return_exceptions:
+                raise e
+            docs.append(e)
+        else:
+            docs.append(Pandoc.from_json(j))
     return docs
 
 
@@ -521,7 +563,8 @@ def _conversion(context: Mapping[str, Any], options: Mapping[str, Any] | None) -
 
 def write(doc: Pandoc, to: str = "html", /,
           options: Mapping[str, Any] | None = None, **kwargs: Any) -> str | bytes:
-    """Render a typed document, as ``convert`` from JSON would."""
+    """Render a typed document, as ``convert`` from JSON would, with its
+    options (``timeout`` and the rest)."""
     opts = _options(options, kwargs)
     opts.update({"from": "json", "to": to})
     return convert(panir.dumps(doc).encode(), opts)

@@ -31,7 +31,15 @@ pandoc.write(f(doc), "plain")
   `run` takes command-line arguments, parsed by pandoc itself.
 - **Errors** raise `PandocError`, with `kind` set to pandoc's error
   constructor (`"PandocParseError"`, ...). **Warnings** are issued as
-  `PandocWarning`.
+  `PandocWarning` (`read_many`'s too).
+- **Time limit:** `timeout=` (seconds) on `convert`, `read`, `write` and
+  `read_many` stops a call still running after that long with a
+  `PandocTimeoutError` (a `PandocError` and a `TimeoutError`); the process
+  goes on. `read_many(..., return_exceptions=True)` keeps the texts read in
+  time, each other one's error in its place. It stops pandoc's own code and
+  the JSON filters pandoc runs, not code in this process (a Python filter
+  runs to its end, and the call then fails) nor Lua filters. `run` and
+  `pandocpy` have none, as pandoc has none.
 - **Threads:** the GIL is released while pandoc runs, so conversions in
   different threads run in parallel. pandoc runs on one thread per logical
   core this process may use, or `$LIBPANDOC_NUM_THREADS` (read at start,
@@ -42,10 +50,19 @@ pandoc.write(f(doc), "plain")
   effect). 2000 small conversions from a pool of Python threads run 5
   times as fast on 16 threads as on one; on a 16-core, 32-thread CPU, 16
   was as fast as 32.
-- **Untrusted input:** `untrusted=True` accepts only options that read no
-  files, write none, fetch nothing and run nothing, with pandoc's sandbox
-  on (libpandoc's list; anything else raises a `PandocError` naming it):
-  for documents or options from someone you don't trust.
+- **Untrusted input:** `untrusted=True` is about options: it accepts only
+  those that read no files, write none, fetch nothing and run nothing, with
+  pandoc's sandbox on and nothing read from the user data directory
+  (libpandoc's list; anything else raises a `PandocError` naming it), for
+  options from code you don't trust. It bounds neither a document's time
+  nor its memory, and there is no memory limit for a call in this process
+  (running out of memory ends it). For documents from someone you don't
+  trust: `sandbox=True` (pandoc's `--sandbox`; citeproc too) or
+  `untrusted=True` so that pandoc reads nothing the document names, a
+  `timeout`, and memory of its own (a separate process, or a container
+  with a memory limit). libpandoc-rs's directory sandbox (the whole
+  conversion in libpandoc.wasm under wasmtime, seeing only the directories
+  it is given, its memory capped) is not in this package yet.
 - **Filters**: `filters=` takes pandoc's (Lua or JSON filter paths,
   `"citeproc"`) and Python ones, mixed, in order. A Python filter is a
   [panir](https://github.com/ickc/panir) `Filter`, or a function that

@@ -1,8 +1,10 @@
 """The high-level API behaves like the pandoc CLI."""
 
+import pickle
 import sys
 import sysconfig
 import threading
+import time
 
 import panir
 import pytest
@@ -93,6 +95,54 @@ def test_errors_are_typed():
 def test_warnings():
     with pytest.warns(pandoc.PandocWarning, match="CouldNotFetchResource"):
         pandoc.convert("![](does-not-exist.png)", to="docx")
+
+
+# The review's 100,000 nested block quotes: over 15 s without a time limit.
+SLOW = ">" * 100_000
+
+
+def test_a_call_has_a_time_limit():
+    started = time.monotonic()
+    with pytest.raises(pandoc.PandocTimeoutError) as e:
+        pandoc.convert(SLOW, to="html", timeout=0.5)
+    assert time.monotonic() - started < 5
+    assert e.value.kind == "Timeout" and isinstance(e.value, pandoc.PandocError)
+    assert isinstance(e.value, TimeoutError)
+    assert repr(pickle.loads(pickle.dumps(e.value))) == repr(e.value)
+    with pytest.raises(TimeoutError):
+        pandoc.read(SLOW, timeout=0.5)
+    # read_many: the texts not read in time, in their places
+    started = time.monotonic()
+    a, slow, b = pandoc.read_many(["*a*", SLOW, "b"], timeout=0.5, return_exceptions=True)
+    assert time.monotonic() - started < 5
+    assert isinstance(slow, pandoc.PandocTimeoutError), slow
+    assert a.blocks and b.blocks
+    with pytest.raises(pandoc.PandocTimeoutError, match="reading input 1"):
+        pandoc.read_many(["a", SLOW], timeout=0.5)
+    # and the next call works
+    assert pandoc.convert("*hi*") == "<p><em>hi</em></p>\n"
+
+
+def test_a_python_filter_runs_to_its_end_past_the_time_limit():
+    """A Python filter is code in this process, which pandoc's time limit
+    can't stop: the conversion fails when it returns."""
+    ran = []
+
+    def slow(doc):
+        time.sleep(1)
+        ran.append(True)
+
+    started = time.monotonic()
+    with pytest.raises(pandoc.PandocTimeoutError):
+        pandoc.convert("x", filters=[slow], timeout=0.2)
+    assert ran == [True] and time.monotonic() - started >= 1
+
+
+def test_read_many_keeps_each_texts_error():
+    a, loop, c = pandoc.read_many(["a", "\\newcommand{\\a}{\\a}\\a", "c"], "latex",
+                                  return_exceptions=True)
+    assert a.blocks and c.blocks
+    assert type(loop) is pandoc.PandocError and loop.message.startswith("reading input 1:")
 
 
 def test_lua_filter(tmp_path):
