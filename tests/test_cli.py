@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -130,6 +131,38 @@ def test_a_filters_exception(tmp_path, monkeypatch, capfd):
     assert cli.main(["-F", "boom", str(src)]) == cli.FILTER_FAILED
     err = capfd.readouterr().err
     assert "boom in the filter" in err and "Traceback" in err
+
+
+def latin1(tmp_path, suffix, text=None):
+    """A path named with byte 0xE9 (Latin-1's é), not UTF-8, as Python has it
+    (a surrogate escape), where the file system can hold one."""
+    if sys.platform in ("win32", "darwin") or sys.getfilesystemencoding() != "utf-8":
+        pytest.skip("file names here are Unicode text")
+    p = os.fsdecode(os.fsencode(tmp_path) + b"/caf\xe9" + suffix.encode())
+    if text is not None:
+        try:
+            Path(p).write_text(text)
+        except OSError:
+            pytest.skip("this file system takes only UTF-8 names")
+    return p
+
+
+def test_file_names_that_are_not_utf8(tmp_path, capfd):
+    """pandocpy takes any file name, as pandoc does; the API's JSON options
+    and run's arguments are UTF-8, and refuse one that isn't."""
+    src, dst = latin1(tmp_path, ".md", "*x*\n"), latin1(tmp_path, ".html")
+    echo = tmp_path / "echo.py"  # (a filter run in process: parse-args sees the names)
+    echo.write_text("import sys\nsys.stdout.write(sys.stdin.read())\n")
+    assert cli.main([src, "-o", dst, "-F", str(echo)]) == 0, capfd.readouterr().err
+    assert Path(dst).read_text() == "<p><em>x</em></p>\n"
+    proc = run([src], "")  # (a process of its own: its sys.argv)
+    assert proc.returncode == 0 and proc.stdout.strip() == b"<p><em>x</em></p>", proc.stderr
+    with pytest.raises(ValueError, match="not UTF-8"):
+        pandoc.convert(input_files=[src])
+    with pytest.raises(ValueError, match="not UTF-8"):
+        pandoc.convert(input_files=[os.fsencode(src)])
+    with pytest.raises(ValueError, match="not UTF-8"):
+        pandoc.run([src])
 
 
 def test_pandoc_lua(tmp_path, capfd):

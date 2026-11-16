@@ -121,15 +121,30 @@ def _options(options: Mapping[str, Any] | None, kwargs: Mapping[str, Any]) -> di
     return opts
 
 
-def _dumps(opts: Mapping[str, Any]) -> bytes:
-    # paths may appear anywhere, e.g. in input_files lists
-    return json.dumps(opts, default=os.fspath).encode()
+def _dumps(value: Any) -> bytes:
+    """JSON for libpandoc, with paths (``os.PathLike`` or bytes) anywhere,
+    e.g. in ``input_files``, as their text. libpandoc's JSON is UTF-8, so a
+    file name that isn't (bytes Python keeps as surrogate escapes) can't be
+    named in it: a ValueError, rather than a name for another file."""
+    try:
+        return json.dumps(value, default=_path, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError as e:
+        near = e.object[max(e.start - 30, 0):e.end + 30]
+        raise ValueError(
+            f"not UTF-8, which libpandoc's options must be (a file name? pandocpy's "
+            f"arguments may be any file name): ...{near!r}..."
+        ) from None
+
+
+def _path(o: Any) -> str:
+    if isinstance(o, (os.PathLike, bytes)):
+        return os.fsdecode(o)
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
 
 
 def query(name: str, **params: Any) -> Any:
     """Answer one of libpandoc's queries (see libpandoc.h), as parsed JSON."""
-    raw = json.dumps({"query": name, **params}).encode()
-    return json.loads(_check(*_core.query(raw)))
+    return json.loads(_check(*_core.query(_dumps({"query": name, **params}))))
 
 
 def num_threads() -> int:
@@ -342,8 +357,8 @@ def _wasm_filter(path: str) -> WasmFilter:
 def _json_filter_path(f: Any) -> str | None:
     """The path of a JSON filter as pandoc reads the "filters" option: a
     string not ending in .lua (nor "citeproc"), or {"type": "json"}."""
-    if isinstance(f, (str, os.PathLike)):
-        s = os.fspath(f)
+    if isinstance(f, (str, bytes, os.PathLike)):
+        s = os.fsdecode(f)
         return None if s == "citeproc" or s.lower().endswith(".lua") else s
     if isinstance(f, Mapping) and f.get("type") == "json":
         return f.get("path")
@@ -391,10 +406,19 @@ def run(args: Sequence[str], input: Source = None) -> bytes:
     ``input`` is standard input; the result is what pandoc writes to standard
     output. Arguments are exactly the CLI's (``--defaults`` included), except
     that informational options such as ``--version`` are rejected: use
-    ``pandoc_version()`` etc. instead.
+    ``pandoc_version()`` etc. instead. They are text, paths or bytes, and
+    must be UTF-8 (libpandoc's ``pandoc_convert_args``): a file name that
+    isn't is a ValueError (``pandocpy`` takes any).
     """
-    argv = tuple(os.fsencode(a) if isinstance(a, os.PathLike) else a.encode() for a in args)
-    return _check(*_core.convert_args(argv, _encode(input)))
+    return _check(*_core.convert_args(tuple(map(_arg, args)), _encode(input)))
+
+
+def _arg(a: str | bytes | os.PathLike[Any]) -> bytes:
+    s = os.fsdecode(a)
+    try:
+        return s.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError(f"not UTF-8, which run's arguments must be: {s!r}") from None
 
 
 def read(source: Source = None, from_: str | Conversion = "markdown", /,
@@ -436,8 +460,8 @@ def read_many(sources: Iterable[str], from_: str | Conversion = "markdown", /,
     texts = [s if isinstance(s, str) else s.decode("utf-8") for s in sources]
     opts = read_options(from_) if isinstance(from_, Conversion) else {"from": from_}
     opts.update(_options(options, kwargs))
-    request = json.dumps({"options": opts, "inputs": texts}, ensure_ascii=False)
-    out = json.loads(_check(*_core.read_many(request.encode("utf-8"))))
+    request = _dumps({"options": opts, "inputs": texts})
+    out = json.loads(_check(*_core.read_many(request)))
     docs = []
     for i, j in enumerate(out):
         if "error" in j:

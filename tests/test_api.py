@@ -52,6 +52,16 @@ def test_convert_files(tmp_path):
     assert dst.read_text() == "<p><em>x</em></p>\n"
 
 
+def test_paths_as_text_bytes_or_path_objects(tmp_path):
+    src = tmp_path / "café.md"
+    src.write_text("*x*")
+    for p in (src, str(src), bytes(src)):
+        assert pandoc.convert(input_files=[p]) == "<p><em>x</em></p>\n"
+        assert pandoc.run([p]) == b"<p><em>x</em></p>\n"
+    # in read_many's options too
+    assert pandoc.read_many(["x"], data_dir=tmp_path, resource_path=[tmp_path])[0].blocks
+
+
 def test_relative_paths(tmp_path, monkeypatch):
     # relative to Python's working directory, in Pyodide too
     monkeypatch.chdir(tmp_path)

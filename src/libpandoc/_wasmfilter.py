@@ -154,12 +154,12 @@ class WasmFilter:
         from . import pandoc_version
 
         wasmtime = _wasmtime()
-        self.name = os.fspath(path)
+        self.name = os.fsdecode(path)
         try:
             self._module = wasmtime.Module.from_file(_engine(), self.name)
         except wasmtime.WasmtimeError as e:
             raise ValueError(f"{self.name}: not a wasm filter: {e}") from None
-        self.dirs = [(os.fspath(h), g) for h, g in dirs]
+        self.dirs = [(os.fsdecode(h), g) for h, g in dirs]
         self.writable = writable
         self.timeout = timeout
         self.max_memory = max_memory
@@ -184,7 +184,8 @@ class WasmFilter:
         engine = _engine()
 
         wasi = wasmtime.WasiConfig()
-        wasi.argv = [self.name, ctx.get("format") or ""]
+        # (WASI's text: a file name that isn't UTF-8 with U+FFFD)
+        wasi.argv = [os.fsencode(self.name).decode("utf-8", "replace"), ctx.get("format") or ""]
         env = [("PANDOC_VERSION", self._pandoc_version),
                ("PANDOC_READER_OPTIONS", json.dumps(ctx.get("reader-options") or {}))]
         for var, key in (("PANDOC_INPUT_FORMAT", "input-format"),
@@ -199,8 +200,8 @@ class WasmFilter:
         for host, guest in self.dirs:
             try:
                 wasi.preopen_dir(host, guest, self.writable)
-            except wasmtime.WasmtimeError:
-                raise RuntimeError(f"{self.name}: can't give it {host}") from None
+            except (wasmtime.WasmtimeError, UnicodeEncodeError):  # (wasmtime: UTF-8 paths)
+                raise RuntimeError(f"{self.name}: can't give it {host!r}") from None
 
         store = wasmtime.Store(engine)
         store.set_wasi(wasi)
