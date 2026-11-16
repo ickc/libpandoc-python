@@ -83,7 +83,9 @@ async def load(source: str | bytes | None = None) -> None:
     """Load libpandoc.wasm: from ``source`` (a URL, fetched and compiled as
     it streams, or the module's bytes), else from the wheel. Pyodide's
     filesystem is pandoc's. Once loaded, calls are synchronous; loading
-    again replaces the instance (after a ``StoppedError``, for one)."""
+    again replaces the instance (after a ``StoppedError``, for one). A
+    module older than this package needs is refused (ImportError), and the
+    instance loaded before, if any, kept."""
     global _abi, _cwd
     import pyodide_js  # type: ignore[import-not-found]
     from pyodide.code import run_js

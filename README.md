@@ -168,8 +168,9 @@ Python and its packages either way. A script runs as a subprocess instead:
 - if it fails in process: it is run again as a subprocess, with a warning.
 
 `python -m libpandoc` is the same as `pandocpy`, which is pandoc's command
-line exactly (pandoc's own command tests pass), `pandocpy lua` included:
-pandoc as a Lua interpreter. Only `pandoc server` is not supported.
+line exactly (pandoc's own command tests pass), file names that aren't
+UTF-8 and `pandocpy lua` (pandoc as a Lua interpreter) included. Only
+`pandoc server` is not supported.
 
 ## The AST
 
@@ -183,7 +184,8 @@ speak the same API version.
 ## Installing
 
 Wheels are `abi3`: one per platform serves every CPython ≥ 3.11 (and one
-more for free-threaded 3.14t). Each bundles libpandoc (about 60 MB): Linux
+more for free-threaded 3.14t). Each bundles libpandoc (about 40 MB to
+download, 200 MB installed; Pyodide's 16 MB): Linux
 (glibc ≥ 2.28, and musl ≥ 1.2 such as Alpine; x86-64 and aarch64), macOS
 (Intel and Arm), Windows x64, and Pyodide (below).
 
@@ -196,8 +198,8 @@ LIBPANDOC_PREFIX=/path/to/prefix pip install .
 
 It needs libpandoc 1.11 or a later 1.x (libpandoc's rule: the same major
 version, a minor at least as large), checked when the package is imported,
-for libpandoc.wasm in Pyodide too. The extension then finds the library in that prefix when it runs (an
-RPATH). `LIBPANDOC_RPATH` sets another, e.g. `$ORIGIN/...` relative to the
+for libpandoc.wasm in Pyodide too. The extension then finds the library in
+that prefix when it runs (an RPATH). `LIBPANDOC_RPATH` sets another, e.g. `$ORIGIN/...` relative to the
 extension, or empty for none (a wheel whose repair tool bundles the
 library). libpandoc-rs reads both variables the same way.
 
@@ -234,8 +236,10 @@ The API and AST tests pass there but the 3 that need threads, which
 wasm doesn't have. A document too large for wasm32's 4 GiB (about 80 MB of
 markdown) stops the libpandoc.wasm instance for good: calls then raise a
 `JsException` named `StoppedError` (libpandoc's `wasm/README.md`, "When an
-instance stops"); for now, restart Pyodide. It needs a browser with wasm's exnref exception
-handling (Chromium 138, Firefox 132, Safari 18.2 or later).
+instance stops") until `await libpandoc.load()` loads it again. It needs a
+browser with wasm's exnref exception handling (Chromium 138, Firefox 132,
+Safari 18.2 or later). Pyodide has no pandoc command (`pandocpy`), no
+threads, and no JSON filters (no programs).
 
 ## Performance
 
