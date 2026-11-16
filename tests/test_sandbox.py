@@ -596,11 +596,25 @@ def test_what_is_refused(lab):
             pandoc.convert("x", to="html", sandbox={"read": [], "timeout": bad})
         with pytest.raises(ValueError):
             pandoc.convert("x", to="html", sandbox={"read": [], "max-memory": bad})
-    # read_many reads in this process: a directory sandbox is libpandoc's error
-    with pytest.raises(pandoc.PandocError):
+    # read_many reads in this process: a directory sandbox is refused
+    with pytest.raises(pandoc.PandocError, match="for conversions"):
         pandoc.read_many(["x"], sandbox={"read": []})
     # pandoc's own sandbox stays the native library's
     assert pandoc.convert("*x*", to="html", sandbox=True) == "<p><em>x</em></p>\n"
+
+
+def test_none_is_an_absent_limit(lab, monkeypatch):
+    """A sandbox's value None is absent: a limit the environment's, a list
+    empty; a list with None in it is refused."""
+    sandbox = {"read": None, "write": None, "timeout": None, "max-memory": None}
+    for var in ("LIBPANDOC_WASM_TIMEOUT", "LIBPANDOC_WASM_MAX_MEMORY"):
+        monkeypatch.setenv(var, "-1")  # (the environment's is read, and refused)
+        with pytest.raises(ValueError, match=var):
+            pandoc.convert("x", to="html", sandbox=sandbox)
+        monkeypatch.delenv(var)
+    assert pandoc.convert("x", to="html", sandbox=sandbox) == "<p>x</p>\n"
+    with pytest.raises(pandoc.PandocError, match="lists directories"):
+        pandoc.convert("x", to="html", sandbox={"read": [None]})
 
 
 def test_the_limits_from_the_environment_are_checked(lab, monkeypatch):

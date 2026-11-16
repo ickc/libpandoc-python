@@ -28,6 +28,9 @@ pandoc.write(f(doc), "plain")
 
 - **Options** are pandoc's [defaults-file](https://pandoc.org/MANUAL.html#defaults-files)
   keys, as keyword arguments (`_` for `-`, `from_` for `from`) or a dict.
+  A value that is `None` is an absent option, as Lua's `nil` in a table
+  (`timeout=None`: no time limit; in a sandbox, `"timeout": None`: the
+  environment's); a list with `None` in it is an error.
   `read(text, "latex")` and `write(doc, "rst")` take the format as their
   second argument (or `from_=`, `to=`, or in the options); an option a
   function would override or ignore (`read(text, to=...)`, `read_many`'s

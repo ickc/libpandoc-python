@@ -11,7 +11,7 @@
 
 Options are pandoc's defaults-file keys (https://pandoc.org/MANUAL.html#defaults-files),
 given as keyword arguments with ``_`` for ``-`` (``reference_doc=``,
-``from_=`` for ``from``) or as a dict, and libpandoc's own: ``timeout``
+``from_=`` for ``from``) or as a dict (None: not given), and libpandoc's own: ``timeout``
 (seconds; ``PandocTimeoutError``) and ``untrusted``, and this package's
 directory sandbox, ``sandbox={"read": [...], "write": [...]}`` (the
 README's "Security"; ``$LIBPANDOC_SANDBOX`` for ``run``). Warnings pandoc
@@ -165,10 +165,13 @@ def _input(source: Source, opts: Mapping[str, Any], fn: str) -> bytes | None:
 
 
 def _options(options: Mapping[str, Any] | None, kwargs: Mapping[str, Any]) -> dict[str, Any]:
-    opts = dict(options or {})
+    """The options and the keyword arguments (``_`` for ``-``; a keyword
+    wins). A value that is None is an absent option, as Lua's ``nil`` in a
+    table: the key is not there (a keyword None leaves the dict's)."""
+    opts = {k: v for k, v in (options or {}).items() if v is not None}
     for key, value in kwargs.items():
-        key = key.rstrip("_").replace("_", "-")
-        opts[key] = value
+        if value is not None:
+            opts[key.rstrip("_").replace("_", "-")] = value
     return opts
 
 

@@ -111,6 +111,8 @@ def from_options(options: Mapping[str, Any]) -> Dirs | None:
         return None  # (True, False: pandoc's own, in the native library)
     lists: dict[str, list[Any]] = {}
     for k, v in s.items():
+        if v is None:
+            continue  # (an absent one: no directories, the environment's limit)
         if k in ("read", "write"):
             if isinstance(v, (str, bytes)) or not isinstance(v, Sequence) or not all(
                     isinstance(d, (str, bytes, os.PathLike)) for d in v):

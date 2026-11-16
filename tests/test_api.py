@@ -128,6 +128,25 @@ def test_options_a_function_overrides_are_refused():
             call()
 
 
+def test_none_is_an_absent_option(tmp_path):
+    """As Lua's nil in a table: the key is not there."""
+    assert pandoc.convert("*x*", to=None, timeout=None, sandbox=None, untrusted=None,
+                          standalone=None, filters=None) == "<p><em>x</em></p>\n"
+    assert pandoc.convert("*x*", {"to": None, "timeout": None, "sandbox": None}) == \
+        "<p><em>x</em></p>\n"
+    # a keyword None leaves the dict's value
+    assert pandoc.convert("*x*", {"to": "plain"}, to=None) == "x\n"
+    assert pandoc.read("*x*", None, timeout=None) == pandoc.read("*x*")
+    assert pandoc.write(pandoc.read("x"), None, timeout=None) == "<p>x</p>\n"
+    assert pandoc.read_many(["x"], None, timeout=None, sandbox=None) == [pandoc.read("x")]
+    assert pandoc.read_many(["x"], to=None) == [pandoc.read("x")]  # (not refused: not given)
+    # a list with None in it stays an error
+    with pytest.raises((pandoc.PandocError, TypeError)):
+        pandoc.convert("x", filters=[None])
+    with pytest.raises((pandoc.PandocError, TypeError)):
+        pandoc.convert(None, input_files=[None])
+
+
 def test_what_convert_returns(tmp_path):
     assert pandoc.convert("x", writer="docx")[:2] == b"PK"  # (pandoc's other name for to)
     assert pandoc.convert("x", output_file=None) == "<p>x</p>\n"  # (None, "-": no file)
