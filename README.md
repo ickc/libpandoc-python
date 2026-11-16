@@ -82,7 +82,8 @@ pandoc.write(f(doc), "plain")
   `--top-level-division`, ..., as Lua's `PANDOC_WRITER_OPTIONS`) and, from
   `convert`, the options themselves. A filter may call pandoc itself
   (`convert`, or `read(text, ctx.conversion)` to parse a fragment the way
-  the document was read). Filter scripts and wasm filters get
+  the document was read, in pandoc's sandbox when the conversion is
+  sandboxed: "Reading fragments, from filters"). Filter scripts and wasm filters get
   `PANDOC_WRITER_OPTIONS` in their environment, as libpandoc's JSON
   filters do.
 
@@ -172,8 +173,9 @@ Python filters (functions, `panir.Filter`s) and Python filter scripts
 this process as they do without the sandbox, called back by the module,
 unconfined. Wasm filters run in this process too, seeing the same mounts.
 `pandocpy lua` and `pandoc server` are not in the module (status 4). A
-filter that reads fragments with `read(text, ctx.conversion)` reads them
-in pandoc's own sandbox: no files.
+filter that reads fragments with `read(text, ctx.conversion)` or
+`read_many` reads them in pandoc's own sandbox: no files, not even in the
+directories listed ("Reading fragments, from filters").
 
 **Limits.** `LIBPANDOC_WASM_TIMEOUT` (seconds) and
 `LIBPANDOC_WASM_MAX_MEMORY` (bytes, or with `k`, `m`, `g`), or for one
@@ -260,6 +262,19 @@ def cells(code, ctx):
 
 `read(text, ctx.conversion)` does the same for one text, and
 `read_options(conversion)` gives the options used.
+
+**Confined when the conversion is.** Document text read this way may name
+files (LaTeX's `\input`, RST's and Org's includes). When the conversion
+the filter runs in is sandboxed, by pandoc's sandbox (`sandbox=True`) or a
+directory sandbox (`sandbox={...}`, `LIBPANDOC_SANDBOX`), the fragments
+are read in pandoc's own sandbox: they read no files, not even in the
+directories listed (the filter runs in this process, outside them). So
+they are too when that can't be told: for a conversion with no options,
+as `pandocpy`'s filters get (pandoc doesn't tell them about `--sandbox`,
+on the command line or in a defaults file) and a script makes from its
+environment (`Conversion.from_environment()`). A filter that wants the
+files read gives its own options, `read(text, ctx.conversion,
+sandbox=False)`: its code, its choice.
 
 ## pandocpy
 
