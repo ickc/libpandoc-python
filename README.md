@@ -264,7 +264,12 @@ def cells(code, ctx):
 ```
 
 `read(text, ctx.conversion)` does the same for one text, and
-`read_options(conversion)` gives the options used.
+`read_options(conversion)` gives the options used. Read so, a text keeps
+its tabs, as Lua's `pandoc.read` reads it; the `pandoc` command, and so
+panflute's `convert_text` and pypandoc, first replace them by spaces
+(`preserve_tabs=False` does). A call each costs about 0.3 ms, six times
+`pandoc.read`'s: batch them. amsthm's 738 notes take 0.25 s read one by
+one and 0.015 s in one `read_many`.
 
 **Confined when the conversion is.** Document text read this way may name
 files (LaTeX's `\input`, RST's and Org's includes). When the conversion

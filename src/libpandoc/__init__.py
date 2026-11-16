@@ -612,12 +612,12 @@ def read_many(sources: Iterable[str], from_: str | Conversion | None = None,
 # The conversion's options that also apply to reading a fragment of it.
 _READ_OPTIONS = frozenset({
     "abbreviations", "data-dir", "default-image-extension", "indented-code-classes",
-    "preserve-tabs", "resource-path", "sandbox", "strip-comments", "tab-stop",
-    "track-changes",
+    "resource-path", "strip-comments", "tab-stop", "track-changes",
 })
 # What read_many's options may be (libpandoc's list): the others, which
 # libpandoc ignores, are a TypeError here rather than silently ignored.
-_READ_MANY_OPTIONS = _READ_OPTIONS | {"from", "reader", "timeout", "untrusted"}
+_READ_MANY_OPTIONS = _READ_OPTIONS | {"from", "reader", "preserve-tabs", "sandbox", "timeout",
+                                      "untrusted"}
 
 # Reader options (as pandoc gives filters) that have a defaults-file key.
 _READER_OPTIONS = ("default-image-extension", "indented-code-classes", "strip-comments",
@@ -637,9 +637,13 @@ def read_options(conversion: Conversion, format: str | None = None) -> dict[str,
     When the conversion is sandboxed, or when that can't be told, a fragment
     is read in pandoc's own sandbox (``"sandbox": True``: it reads no files,
     as LaTeX's ``\\input`` or an RST or Org include would): see
-    ``_sandboxed``. Options given to ``read`` or ``read_many`` beside the
-    conversion win over these (``sandbox=False`` reads files again: the
-    filter's author's choice).
+    ``_sandboxed``. And the text is read as given, its tabs kept
+    (``"preserve-tabs": True``), as Lua's ``pandoc.read`` reads it: the
+    ``pandoc`` command (and so panflute's ``convert_text``, pypandoc)
+    first replaces them by spaces. Options given to ``read`` or
+    ``read_many`` beside the conversion win over these (``sandbox=False``
+    reads files again, ``preserve_tabs=False`` expands tabs: the filter's
+    author's choice).
     """
     opts: dict[str, Any] = {}
     if conversion.options is not None:
@@ -653,6 +657,7 @@ def read_options(conversion: Conversion, format: str | None = None) -> dict[str,
     opts.pop("sandbox", None)
     if _sandboxed(conversion):
         opts["sandbox"] = True
+    opts["preserve-tabs"] = True
     given = conversion.options or {}
     opts["from"] = (format or conversion.input_format or given.get("from")
                     or given.get("reader") or "markdown")
