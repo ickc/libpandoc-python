@@ -207,6 +207,28 @@ def test_convert_runs_a_panir_script_knowing_the_options(tmp_path, monkeypatch):
     assert "<p>7</p>" in libpandoc.convert("hi", to="html", tab_stop=7, filters=[s])
 
 
+WRITER = """\
+import json, os, sys
+doc = json.load(sys.stdin)
+w = json.loads(os.environ["PANDOC_WRITER_OPTIONS"])
+doc["blocks"].append({"t": "Para", "c": [{"t": "Str", "c":
+    f"pid={os.getpid()}|{w['number-sections']}|{w['top-level-division']}"}]})
+json.dump(doc, sys.stdout)
+"""
+
+
+@pytest.mark.parametrize("where", ["in process", "subprocess"])
+def test_a_script_is_told_the_writer_options(tmp_path, md, capfd, monkeypatch, where):
+    """PANDOC_WRITER_OPTIONS, as libpandoc gives the JSON filters it runs."""
+    monkeypatch.setenv(_scripts.ENV, "*" if where == "subprocess" else "")
+    s = script(tmp_path, "writer.py", WRITER)
+    status, out, err = pandocpy(capfd, "-t", "html", "-N", "--top-level-division=part",
+                                "-F", s, md)
+    assert status == 0, err
+    assert "|True|top-level-part" in out
+    assert (f"pid={os.getpid()}|" in out) == (where == "in process")
+
+
 def test_scripts_in_parallel_threads(tmp_path, monkeypatch):
     """Each conversion's script sees its own document, format and
     environment, and the process's own streams are left alone."""

@@ -11,8 +11,9 @@
 
 Options are pandoc's defaults-file keys (https://pandoc.org/MANUAL.html#defaults-files),
 given as keyword arguments with ``_`` for ``-`` (``reference_doc=``,
-``from_=`` for ``from``) or as a dict. Warnings pandoc reports are issued as
-``PandocWarning``; failures raise ``PandocError``.
+``from_=`` for ``from``) or as a dict, and libpandoc's own: ``timeout``
+(seconds; ``PandocTimeoutError``) and ``untrusted``. Warnings pandoc
+reports are issued as ``PandocWarning``; failures raise ``PandocError``.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from ._wasmfilter import WasmFilter
 
 __all__ = [
     "PandocError",
+    "PandocTimeoutError",
     "PandocWarning",
     "WasmFilter",
     "convert",
@@ -79,6 +81,21 @@ class PandocError(Exception):
     def __str__(self) -> str:
         return f"{self.kind}: {self.message}"
 
+    def __reduce__(self) -> tuple[Any, ...]:  # (pickled, e.g. by multiprocessing)
+        return type(self), (self.kind, self.message)
+
+
+class PandocTimeoutError(PandocError, TimeoutError):
+    """A call stopped by its time limit (the option ``timeout``, seconds):
+    libpandoc's error kind ``"Timeout"``. Both a ``PandocError`` and a
+    ``TimeoutError`` (so an ``OSError``, as Python's other time limits are),
+    so that either catches it."""
+
+
+def _error(kind: str | None, message: str | None) -> PandocError:
+    kind = kind or "Exception"
+    return (PandocTimeoutError if kind == "Timeout" else PandocError)(kind, message or "")
+
 
 class PandocWarning(UserWarning):
     """A warning from pandoc, e.g. a missing image or unresolved citation."""
@@ -96,7 +113,7 @@ def _check(status: int, output: bytes, kind: str | None, message: str | None,
         else:
             logger.info(text)
     if status != 0:
-        raise PandocError(kind or "Exception", message or "")
+        raise _error(kind, message)
     return output
 
 
@@ -121,35 +138,67 @@ def _options(options: Mapping[str, Any] | None, kwargs: Mapping[str, Any]) -> di
     return opts
 
 
-def _dumps(opts: Mapping[str, Any]) -> bytes:
-    # paths may appear anywhere, e.g. in input_files lists
-    return json.dumps(opts, default=os.fspath).encode()
+def _dumps(value: Any) -> bytes:
+    """JSON for libpandoc, with paths (``os.PathLike`` or bytes) anywhere,
+    e.g. in ``input_files``, as their text. libpandoc's JSON is UTF-8, so a
+    file name that isn't (bytes Python keeps as surrogate escapes) can't be
+    named in it: a ValueError, rather than a name for another file."""
+    try:
+        return json.dumps(value, default=_path, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError as e:
+        near = e.object[max(e.start - 30, 0):e.end + 30]
+        raise ValueError(
+            f"not UTF-8, which libpandoc's options must be (a file name? pandocpy's "
+            f"arguments may be any file name): ...{near!r}..."
+        ) from None
+
+
+def _path(o: Any) -> str:
+    if isinstance(o, (os.PathLike, bytes)):
+        return os.fsdecode(o)
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
 
 
 def query(name: str, **params: Any) -> Any:
     """Answer one of libpandoc's queries (see libpandoc.h), as parsed JSON."""
-    raw = json.dumps({"query": name, **params}).encode()
-    return json.loads(_check(*_core.query(raw)))
+    return json.loads(_check(*_core.query(_dumps({"query": name, **params}))))
 
 
 def num_threads() -> int:
-    """How many threads pandoc runs on: one per logical core this process
-    may use (its CPU affinity), unless ``$LIBPANDOC_NUM_THREADS`` (read at
-    start, like ``$OMP_NUM_THREADS``) or ``set_num_threads`` says otherwise.
-    Conversions from different Python threads, and ``read_many``, run in
-    parallel on them."""
+    """How many threads pandoc runs on, or, before they have grown (below),
+    will run on: one per logical core this process may use (its CPU
+    affinity), unless ``$LIBPANDOC_NUM_THREADS`` (read at start, like
+    ``$OMP_NUM_THREADS``) or ``set_num_threads`` says otherwise; at most one
+    per such core. Conversions from different Python threads, and
+    ``read_many``, run in parallel on them.
+
+    pandoc starts on one thread and grows to that number once, the first
+    time it runs something in parallel: a call starting while another
+    thread's runs, or ``read_many`` with more than one text. In Pyodide,
+    always 1."""
     return int(query("num-threads"))
 
 
 def set_num_threads(n: int) -> int:
-    """Run pandoc on ``n`` threads from now on (at least 1); returns the new
-    number."""
-    return _core.set_num_threads(n)
+    """Set the number of threads pandoc will grow to (``num_threads``),
+    clamped to 1 to one per logical core this process may use; returns the
+    number in effect.
+
+    Only until pandoc's threads have grown: after that it changes nothing
+    and returns the number they grew to (libpandoc does not resize a
+    running pandoc, which hung it now and then). So a result other than
+    ``n`` means that ``n`` was out of range or that it came too late: call
+    it before pandoc first runs anything in parallel, or set
+    ``$LIBPANDOC_NUM_THREADS``."""
+    in_effect = _core.set_num_threads(n)
+    if in_effect < 1:  # (0: libpandoc's runtime has stopped)
+        raise RuntimeError("libpandoc's runtime is not running")
+    return in_effect
 
 
 @functools.cache
 def pandoc_version() -> str:
-    """The version of the pandoc library in use, e.g. ``"3.12"``."""
+    """The version of the pandoc library in use, e.g. ``"3.14"``."""
     return query("version")
 
 
@@ -212,6 +261,18 @@ def convert(
     a ``panir.Conversion``) and change it or return a new one. They run in
     order, in this process, within one pandoc run, as ``--filter`` would. A
     Python filter's exception is raised from ``convert`` as it is.
+
+    ``timeout=`` (seconds; libpandoc's option, not pandoc's) stops a
+    conversion still running after that long with a ``PandocTimeoutError``;
+    the process goes on. It stops pandoc's own code (readers, writers,
+    templates, citeproc) and a JSON filter pandoc runs, but not code in this
+    process or in Lua: a Python filter (a function, or a script run in
+    process or by this package as a subprocess) runs to its end, and the
+    conversion then fails with ``PandocTimeoutError`` when it returns; a Lua
+    filter isn't stopped at all. There is no memory limit: for documents
+    from someone you don't trust, give the conversion a process of its own
+    (or libpandoc.wasm) and a ``timeout``, with ``sandbox=True`` or
+    ``untrusted=True`` so that it reads nothing the document names.
 
         convert("# Hi", from_="markdown", to="docx")
         convert(options={"input-files": ["a.md"], "output-file": "a.pdf"})
@@ -325,8 +386,8 @@ def _wasm_filter(path: str) -> WasmFilter:
 def _json_filter_path(f: Any) -> str | None:
     """The path of a JSON filter as pandoc reads the "filters" option: a
     string not ending in .lua (nor "citeproc"), or {"type": "json"}."""
-    if isinstance(f, (str, os.PathLike)):
-        s = os.fspath(f)
+    if isinstance(f, (str, bytes, os.PathLike)):
+        s = os.fsdecode(f)
         return None if s == "citeproc" or s.lower().endswith(".lua") else s
     if isinstance(f, Mapping) and f.get("type") == "json":
         return f.get("path")
@@ -374,10 +435,19 @@ def run(args: Sequence[str], input: Source = None) -> bytes:
     ``input`` is standard input; the result is what pandoc writes to standard
     output. Arguments are exactly the CLI's (``--defaults`` included), except
     that informational options such as ``--version`` are rejected: use
-    ``pandoc_version()`` etc. instead.
+    ``pandoc_version()`` etc. instead. They are text, paths or bytes, and
+    must be UTF-8 (libpandoc's ``pandoc_convert_args``): a file name that
+    isn't is a ValueError (``pandocpy`` takes any).
     """
-    argv = tuple(os.fsencode(a) if isinstance(a, os.PathLike) else a.encode() for a in args)
-    return _check(*_core.convert_args(argv, _encode(input)))
+    return _check(*_core.convert_args(tuple(map(_arg, args)), _encode(input)))
+
+
+def _arg(a: str | bytes | os.PathLike[Any]) -> bytes:
+    s = os.fsdecode(a)
+    try:
+        return s.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError(f"not UTF-8, which run's arguments must be: {s!r}") from None
 
 
 def read(source: Source = None, from_: str | Conversion = "markdown", /,
@@ -389,7 +459,7 @@ def read(source: Source = None, from_: str | Conversion = "markdown", /,
     conversion reads its input, as with ``read_many``.
 
     Otherwise other options (``input_files``, reader extensions in
-    ``from_``, Lua ``filters``, ...) apply as in ``convert``.
+    ``from_``, Lua ``filters``, ``timeout``, ...) apply as in ``convert``.
     """
     if isinstance(from_, Conversion):
         if not isinstance(source, (str, bytes)):
@@ -404,7 +474,8 @@ def read(source: Source = None, from_: str | Conversion = "markdown", /,
 
 
 def read_many(sources: Iterable[str], from_: str | Conversion = "markdown", /,
-              options: Mapping[str, Any] | None = None, **kwargs: Any) -> list[Pandoc]:
+              options: Mapping[str, Any] | None = None, *, return_exceptions: bool = False,
+              **kwargs: Any) -> list[Any]:
     """Parse many texts, each on its own, in parallel: their documents.
 
     For filters that parse many fragments, such as table cells: one call
@@ -412,21 +483,33 @@ def read_many(sources: Iterable[str], from_: str | Conversion = "markdown", /,
     cores, much cheaper than a ``read`` each. ``from_`` is a format, or the
     conversion a filter runs in (``ctx.conversion``), to read the way it
     reads its input. Options that affect reading apply (``tab_stop``,
-    ``abbreviations``, ``resource_path``, ...).
+    ``abbreviations``, ``resource_path``, ``sandbox``, ...), and
+    ``timeout`` (seconds), the whole call's: it returns within about that
+    long, a text not read by then failing with ``PandocTimeoutError``.
+    Warnings (an include file not found) are issued as ``PandocWarning``, as
+    ``convert``'s.
+
+    A text that can't be read raises its ``PandocError``, the first one's;
+    with ``return_exceptions=True`` (as ``asyncio.gather``'s) each such
+    error is in the list in its text's place instead, the others' documents
+    kept.
 
         docs = libpandoc.read_many(cells, ctx.conversion)
     """
     texts = [s if isinstance(s, str) else s.decode("utf-8") for s in sources]
     opts = read_options(from_) if isinstance(from_, Conversion) else {"from": from_}
     opts.update(_options(options, kwargs))
-    request = json.dumps({"options": opts, "inputs": texts}, ensure_ascii=False)
-    out = json.loads(_check(*_core.read_many(request.encode("utf-8"))))
-    docs = []
+    request = _dumps({"options": opts, "inputs": texts})
+    out = json.loads(_check(*_core.read_many(request)))
+    docs: list[Any] = []
     for i, j in enumerate(out):
         if "error" in j:
-            e = j["error"]
-            raise PandocError(e["kind"], f"reading input {i}: {e['message']}")
-        docs.append(Pandoc.from_json(j))
+            e = _error(j["error"].get("kind"), f"reading input {i}: {j['error'].get('message')}")
+            if not return_exceptions:
+                raise e
+            docs.append(e)
+        else:
+            docs.append(Pandoc.from_json(j))
     return docs
 
 
@@ -474,13 +557,15 @@ def _conversion(context: Mapping[str, Any], options: Mapping[str, Any] | None) -
         input_format=context.get("input-format"),
         output_format=context.get("output-format"),
         reader_options=context.get("reader-options"),
+        writer_options=context.get("writer-options"),
         options=options,
     )
 
 
 def write(doc: Pandoc, to: str = "html", /,
           options: Mapping[str, Any] | None = None, **kwargs: Any) -> str | bytes:
-    """Render a typed document, as ``convert`` from JSON would."""
+    """Render a typed document, as ``convert`` from JSON would, with its
+    options (``timeout`` and the rest)."""
     opts = _options(options, kwargs)
     opts.update({"from": "json", "to": to})
     return convert(panir.dumps(doc).encode(), opts)

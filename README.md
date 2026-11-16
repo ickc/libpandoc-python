@@ -31,18 +31,38 @@ pandoc.write(f(doc), "plain")
   `run` takes command-line arguments, parsed by pandoc itself.
 - **Errors** raise `PandocError`, with `kind` set to pandoc's error
   constructor (`"PandocParseError"`, ...). **Warnings** are issued as
-  `PandocWarning`.
+  `PandocWarning` (`read_many`'s too).
+- **Time limit:** `timeout=` (seconds) on `convert`, `read`, `write` and
+  `read_many` stops a call still running after that long with a
+  `PandocTimeoutError` (a `PandocError` and a `TimeoutError`); the process
+  goes on. `read_many(..., return_exceptions=True)` keeps the texts read in
+  time, each other one's error in its place. It stops pandoc's own code and
+  the JSON filters pandoc runs, not code in this process (a Python filter
+  runs to its end, and the call then fails) nor Lua filters. `run` and
+  `pandocpy` have none, as pandoc has none.
 - **Threads:** the GIL is released while pandoc runs, so conversions in
   different threads run in parallel. pandoc runs on one thread per logical
   core this process may use, or `$LIBPANDOC_NUM_THREADS` (read at start,
-  like `$OMP_NUM_THREADS`); `num_threads()` and `set_num_threads(n)` query
-  and change it. 2000 small conversions from a pool of Python threads run
-  5 times as fast on 16 threads as on one; on a 16-core, 32-thread CPU, 16
+  like `$OMP_NUM_THREADS`); `num_threads()` tells the number. pandoc
+  starts on one thread and grows to that number the first time it runs
+  something in parallel; `set_num_threads(n)` changes the number only
+  before that (after, it changes nothing and returns the number in
+  effect). 2000 small conversions from a pool of Python threads run 5
+  times as fast on 16 threads as on one; on a 16-core, 32-thread CPU, 16
   was as fast as 32.
-- **Untrusted input:** `untrusted=True` accepts only options that read no
-  files, write none, fetch nothing and run nothing, with pandoc's sandbox
-  on (libpandoc's list; anything else raises a `PandocError` naming it):
-  for documents or options from someone you don't trust.
+- **Untrusted input:** `untrusted=True` is about options: it accepts only
+  those that read no files, write none, fetch nothing and run nothing, with
+  pandoc's sandbox on and nothing read from the user data directory
+  (libpandoc's list; anything else raises a `PandocError` naming it), for
+  options from code you don't trust. It bounds neither a document's time
+  nor its memory, and there is no memory limit for a call in this process
+  (running out of memory ends it). For documents from someone you don't
+  trust: `sandbox=True` (pandoc's `--sandbox`; citeproc too) or
+  `untrusted=True` so that pandoc reads nothing the document names, a
+  `timeout`, and memory of its own (a separate process, or a container
+  with a memory limit). libpandoc-rs's directory sandbox (the whole
+  conversion in libpandoc.wasm under wasmtime, seeing only the directories
+  it is given, its memory capped) is not in this package yet.
 - **Filters**: `filters=` takes pandoc's (Lua or JSON filter paths,
   `"citeproc"`) and Python ones, mixed, in order. A Python filter is a
   [panir](https://github.com/ickc/panir) `Filter`, or a function that
@@ -50,8 +70,15 @@ pandoc.write(f(doc), "plain")
   Python filters run in this process, inside the one pandoc conversion, as
   pandoc runs a Lua filter: what the reader keeps in memory (images embedded
   in a docx) reaches the writer, and a filter's exception is raised from
-  `convert` as it is. A filter may call pandoc itself (`convert`, or
-  `ctx.read(text)` to parse a fragment the way the document was read).
+  `convert` as it is. A filter that takes the conversion
+  (`ctx.conversion`, a `panir.Conversion`) knows the formats pandoc decided
+  on, the reader's and the writer's options (`writer_options`: `-N`,
+  `--top-level-division`, ..., as Lua's `PANDOC_WRITER_OPTIONS`) and, from
+  `convert`, the options themselves. A filter may call pandoc itself
+  (`convert`, or `read(text, ctx.conversion)` to parse a fragment the way
+  the document was read). Filter scripts and wasm filters get
+  `PANDOC_WRITER_OPTIONS` in their environment, as libpandoc's JSON
+  filters do.
 
 ## Wasm filters
 
@@ -71,13 +98,17 @@ not filters); a wasm filter can't:
   `writable=` for others); no network, no programs;
 - **calls to pandoc** (libpandoc-rs's `libpandoc` crate, built for wasm):
   in pandoc's sandbox, with no options that read or write files, fetch or
-  run anything (libpandoc checks them: `"untrusted"`, 1.7);
+  run anything, and nothing read from the user data directory (libpandoc
+  checks them: `"untrusted"`);
 - **time and memory**, which pandoc limits for no filter:
-  `$LIBPANDOC_WASM_TIMEOUT` (seconds, as pandoc-server's `--timeout`; its
-  calls to pandoc included) and `$LIBPANDOC_WASM_MAX_MEMORY` (bytes, or with
-  `k`, `m`, `g`, as pandoc's `+RTS -M`) stop a filter past them, with a
-  `WasmFilterError`; none by default, as pandoc. `WasmFilter(path,
-  timeout=, max_memory=)` for one filter (0: none).
+  `$LIBPANDOC_WASM_TIMEOUT` (seconds, as pandoc-server's `--timeout`) and
+  `$LIBPANDOC_WASM_MAX_MEMORY` (bytes, or with `k`, `m`, `g`, as pandoc's
+  `+RTS -M`) stop a filter past them, with a `WasmFilterError`; none by
+  default, as pandoc. `WasmFilter(path, timeout=, max_memory=)` for one
+  filter (0: none). The time limit covers the filter's calls to pandoc:
+  each runs with the time the filter has left as its `timeout`, one made
+  after that fails at once, and the filter is then stopped. Its memory
+  limit is the filter's own memory, not pandoc's, which its calls use.
 
 ## Reading fragments, from filters
 
@@ -137,8 +168,9 @@ Python and its packages either way. A script runs as a subprocess instead:
 - if it fails in process: it is run again as a subprocess, with a warning.
 
 `python -m libpandoc` is the same as `pandocpy`, which is pandoc's command
-line exactly (pandoc's own command tests pass), `pandocpy lua` included:
-pandoc as a Lua interpreter. Only `pandoc server` is not supported.
+line exactly (pandoc's own command tests pass), file names that aren't
+UTF-8 and `pandocpy lua` (pandoc as a Lua interpreter) included. Only
+`pandoc server` is not supported.
 
 ## The AST
 
@@ -152,7 +184,8 @@ speak the same API version.
 ## Installing
 
 Wheels are `abi3`: one per platform serves every CPython ≥ 3.11 (and one
-more for free-threaded 3.14t). Each bundles libpandoc (about 60 MB): Linux
+more for free-threaded 3.14t). Each bundles libpandoc (about 40 MB to
+download, 200 MB installed; Pyodide's 16 MB): Linux
 (glibc ≥ 2.28, and musl ≥ 1.2 such as Alpine; x86-64 and aarch64), macOS
 (Intel and Arm), Windows x64, and Pyodide (below).
 
@@ -163,8 +196,10 @@ or a staged `dist/` prefix):
 LIBPANDOC_PREFIX=/path/to/prefix pip install .
 ```
 
-The extension then finds the library in that prefix when it runs (an
-RPATH). `LIBPANDOC_RPATH` sets another, e.g. `$ORIGIN/...` relative to the
+It needs libpandoc 1.11 or a later 1.x (libpandoc's rule: the same major
+version, a minor at least as large), checked when the package is imported,
+for libpandoc.wasm in Pyodide too. The extension then finds the library in
+that prefix when it runs (an RPATH). `LIBPANDOC_RPATH` sets another, e.g. `$ORIGIN/...` relative to the
 extension, or empty for none (a wheel whose repair tool bundles the
 library). libpandoc-rs reads both variables the same way.
 
@@ -201,8 +236,10 @@ The API and AST tests pass there but the 3 that need threads, which
 wasm doesn't have. A document too large for wasm32's 4 GiB (about 80 MB of
 markdown) stops the libpandoc.wasm instance for good: calls then raise a
 `JsException` named `StoppedError` (libpandoc's `wasm/README.md`, "When an
-instance stops"); for now, restart Pyodide. It needs a browser with wasm's exnref exception
-handling (Chromium 138, Firefox 132, Safari 18.2 or later).
+instance stops") until `await libpandoc.load()` loads it again. It needs a
+browser with wasm's exnref exception handling (Chromium 138, Firefox 132,
+Safari 18.2 or later). Pyodide has no pandoc command (`pandocpy`), no
+threads, and no JSON filters (no programs).
 
 ## Performance
 

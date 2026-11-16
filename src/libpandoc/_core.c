@@ -15,6 +15,18 @@
 #include <stdlib.h>
 #include <libpandoc.h>
 
+/* The libpandoc this module needs: the same major version and at least
+ * this minor (libpandoc.h's rule), checked at import. 1.11: "timeout" and
+ * writer options for filters (1.10), read_many's log and
+ * pandoc_set_num_threads's meaning (1.9), "untrusted" reading nothing of
+ * the user data directory (1.10). _wasm.py checks libpandoc.wasm by the
+ * same numbers. */
+#define MIN_ABI_MAJOR 1
+#define MIN_ABI_MINOR 11
+#if LIBPANDOC_ABI_VERSION_MAJOR != MIN_ABI_MAJOR || LIBPANDOC_ABI_VERSION_MINOR < MIN_ABI_MINOR
+#error "libpandoc.h is older than the libpandoc this module needs"
+#endif
+
 /* Arguments are parsed as objects and read with PyBytes_AsStringAndSize,
  * not with "y#": under the limited API, which PyArg_ParseTuple symbol "#"
  * formats bind to depends on the Python whose headers built the module. */
@@ -407,7 +419,7 @@ static PyMethodDef core_methods[] = {
     {"query", core_query, METH_VARARGS,
      "query(query: bytes) -> (status, output, error_kind, error_message, log)"},
     {"set_num_threads", core_set_num_threads, METH_VARARGS,
-     "set_num_threads(n: int) -> int: pandoc's threads from now on; the new number"},
+     "set_num_threads(n: int) -> int: the number of pandoc's threads, until they have grown; the number in effect"},
     {"abi_version", core_abi_version, METH_NOARGS,
      "abi_version() -> int: LIBPANDOC_ABI_VERSION of the loaded library"},
     {NULL, NULL, 0, NULL}
@@ -423,14 +435,12 @@ PyMODINIT_FUNC
 PyInit__core(void)
 {
     PyObject *m;
-    /* the same major version, and at least the minor one built against */
     int abi = pandoc_abi_version();
-    if (abi / 1000 != LIBPANDOC_ABI_VERSION_MAJOR || abi % 1000 < LIBPANDOC_ABI_VERSION_MINOR) {
+    if (abi / 1000 != MIN_ABI_MAJOR || abi % 1000 < MIN_ABI_MINOR) {
         PyErr_Format(PyExc_ImportError,
-                     "libpandoc's C interface is version %d.%d, but this module needs "
-                     "%d.%d or a later %d.x",
-                     abi / 1000, abi % 1000, LIBPANDOC_ABI_VERSION_MAJOR,
-                     LIBPANDOC_ABI_VERSION_MINOR, LIBPANDOC_ABI_VERSION_MAJOR);
+                     "libpandoc %d.%d is loaded, and this module needs libpandoc %d.%d "
+                     "or a later %d.x",
+                     abi / 1000, abi % 1000, MIN_ABI_MAJOR, MIN_ABI_MINOR, MIN_ABI_MAJOR);
         return NULL;
     }
     m = PyModule_Create(&core_module);
@@ -444,7 +454,7 @@ PyInit__core(void)
         return NULL;
     }
 #endif
-    if (PyModule_AddIntConstant(m, "ABI_VERSION", LIBPANDOC_ABI_VERSION) < 0) {
+    if (PyModule_AddIntConstant(m, "MIN_ABI_VERSION", MIN_ABI_MAJOR * 1000 + MIN_ABI_MINOR) < 0) {
         Py_DECREF(m);
         return NULL;
     }

@@ -199,6 +199,15 @@ def test_a_function_filter_may_take_the_conversion():
     assert seen == ["commonmark_x"]
 
 
+def test_a_filter_sees_the_writer_options():
+    """libpandoc's "writer-options" (1.10), as Lua's PANDOC_WRITER_OPTIONS."""
+    seen = []
+    pandoc.convert("hi", to="latex", number_sections=True, top_level_division="chapter",
+                   filters=[lambda doc, conversion: seen.append(conversion.writer_options)])
+    w = seen[0]
+    assert w["number-sections"] is True and w["top-level-division"] == "top-level-chapter", w
+
+
 def test_a_filter_must_return_a_document():
     with pytest.raises(TypeError, match="not a Pandoc"):
         pandoc.convert("hi", to="html", filters=[lambda doc: 42])

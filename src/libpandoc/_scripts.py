@@ -2,8 +2,10 @@
 
 A filter that is a Python script (``.py``, or a Python ``#!`` line) runs in
 this process instead of a new one: as its own ``__main__``, with the
-document as its standard input, the output format as its argument, pandoc's
-environment variables, and its standard output as the result. That serves
+document as its standard input, the output format as its argument, the
+environment variables libpandoc gives JSON filters (pandoc's, and the
+formats with extensions and ``PANDOC_WRITER_OPTIONS``), and its standard
+output as the result. That serves
 any framework (panflute, pandocfilters, panir, plain JSON) exactly as its
 own code runs, minus starting a Python process and importing it all again.
 A panir script's ``f.main()`` hands its ``Filter`` over instead, which then
@@ -110,6 +112,30 @@ class ScriptFailed(Exception):
     pass
 
 
+def filter_env(ctx: Mapping[str, Any], pandoc_version: str) -> dict[str, str]:
+    """The environment variables a JSON filter run by libpandoc gets, from a
+    callback's context: pandoc's (``PANDOC_VERSION``,
+    ``PANDOC_READER_OPTIONS``) and libpandoc's (the formats with extensions,
+    ``PANDOC_WRITER_OPTIONS``: without ``variables`` if it would be longer
+    than 32,000 bytes, an environment variable's limit on Windows, as
+    libpandoc does)."""
+    env = {
+        "PANDOC_VERSION": pandoc_version,
+        "PANDOC_READER_OPTIONS": json.dumps(ctx.get("reader-options") or {}),
+    }
+    for var, key in (("PANDOC_INPUT_FORMAT", "input-format"),
+                     ("PANDOC_OUTPUT_FORMAT", "output-format")):
+        if ctx.get(key):
+            env[var] = ctx[key]
+    writer = ctx.get("writer-options")
+    if writer is not None:
+        text = json.dumps(writer)
+        if len(text) > 32_000:
+            text = json.dumps({k: v for k, v in writer.items() if k != "variables"})
+        env["PANDOC_WRITER_OPTIONS"] = text
+    return env
+
+
 def callback(
     path: str,
     pandoc_version: str,
@@ -124,12 +150,7 @@ def callback(
 
     def run(doc: bytes, context: bytes) -> bytes:
         ctx = json.loads(context)
-        env = {
-            "PANDOC_VERSION": pandoc_version,
-            "PANDOC_READER_OPTIONS": json.dumps(ctx.get("reader-options") or {}),
-            "PANDOC_INPUT_FORMAT": ctx.get("input-format") or "",
-            "PANDOC_OUTPUT_FORMAT": ctx.get("output-format") or "",
-        }
+        env = filter_env(ctx, pandoc_version)
         fmt = ctx.get("format") or ""
         if not in_process:
             return subprocess_run(path, doc, fmt, env)

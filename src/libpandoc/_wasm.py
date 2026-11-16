@@ -12,7 +12,11 @@ JS module ``libpandoc_wasm``. A host may register one itself before
     const pandoc = await load(wasmUrl);
     pyodide.registerJsModule("libpandoc_wasm", pandoc.abi);
 
-No threads, JSON filters or ``pandoc_main`` in wasm.
+The module is checked as the native library is (``_core.c``): the same
+major version and at least the minor this package needs. No threads or
+JSON filters here, and no pandoc command: libpandoc.wasm has
+``pandoc_main`` from 1.11, but its standard streams would be the JS host's
+WASI ones, not Python's.
 """
 
 from __future__ import annotations
@@ -33,10 +37,29 @@ class _NotLoaded:
         )
 
 
+# The libpandoc this package needs, as _core.c's MIN_ABI_VERSION.
+MIN_ABI_VERSION = 1011
+
+
+def _checked(abi: Any) -> Any:
+    """``abi`` if its libpandoc.wasm is one this package works with (the
+    same major version, a minor at least as large), else ImportError."""
+    v = int(abi.abiVersion())
+    need = MIN_ABI_VERSION
+    if v // 1000 != need // 1000 or v % 1000 < need % 1000:
+        raise ImportError(
+            f"libpandoc.wasm {v // 1000}.{v % 1000} is loaded, and this module needs "
+            f"libpandoc {need // 1000}.{need % 1000} or a later {need // 1000}.x"
+        )
+    return abi
+
+
 try:
-    import libpandoc_wasm as _abi  # type: ignore[import-not-found]
+    import libpandoc_wasm  # type: ignore[import-not-found]
 except ImportError:
-    _abi = _NotLoaded()
+    _abi: Any = _NotLoaded()
+else:
+    _abi = _checked(libpandoc_wasm)
 
 
 def loaded() -> bool:
@@ -60,7 +83,9 @@ async def load(source: str | bytes | None = None) -> None:
     """Load libpandoc.wasm: from ``source`` (a URL, fetched and compiled as
     it streams, or the module's bytes), else from the wheel. Pyodide's
     filesystem is pandoc's. Once loaded, calls are synchronous; loading
-    again replaces the instance (after a ``StoppedError``, for one)."""
+    again replaces the instance (after a ``StoppedError``, for one). A
+    module older than this package needs is refused (ImportError), and the
+    instance loaded before, if any, kept."""
     global _abi, _cwd
     import pyodide_js  # type: ignore[import-not-found]
     from pyodide.code import run_js
@@ -83,7 +108,7 @@ async def load(source: str | bytes | None = None) -> None:
         "(text) => import('data:text/javascript;charset=utf-8,' + encodeURIComponent(text))"
     )
     glue_module = await imp(glue)
-    _abi = (await glue_module.loadForPyodide(pyodide_js, js_source)).abi
+    _abi = _checked((await glue_module.loadForPyodide(pyodide_js, js_source)).abi)
     _cwd = "/"
 
 
@@ -166,8 +191,8 @@ def query(q: bytes) -> Result:
 
 
 def set_num_threads(n: int) -> int:
-    return 1  # one thread in wasm
+    return 1  # one thread in wasm (libpandoc.wasm answers the query so too)
 
 
 def main(argv: tuple[bytes, ...], filters: bytes | None, callbacks: tuple[Any, ...]) -> int:
-    raise NotImplementedError("the pandoc command (pandoc_main) is not in libpandoc.wasm")
+    raise NotImplementedError("the pandoc command (pandoc_main) is not available in Pyodide")

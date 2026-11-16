@@ -55,9 +55,10 @@ def test_a_wasm_filter_runs_in_the_conversion():
 
 @needs_filters
 def test_it_is_told_the_conversion():
-    out = json.loads(pandoc.convert("x", from_="commonmark_x", to="json",
+    out = json.loads(pandoc.convert("x", from_="commonmark_x", to="json", number_sections=True,
                                     filters=[wasm("conversion")]))
     told = json.loads(out["blocks"][-1]["c"][1])
+    assert told["number-sections"] is True  # (PANDOC_WRITER_OPTIONS)
     assert told["format"] == "json"
     assert told["input-format"].startswith("commonmark_x")
     assert told["pandoc-version"] == pandoc.pandoc_version()
@@ -130,6 +131,26 @@ def test_limits(monkeypatch):
     assert failure(wasm("upper"), "hi") is None
     # 0: no limit, whatever the environment says
     assert failure(WasmFilter(wasm("upper"), timeout=0, max_memory=0), "hi") is None
+
+
+@needs_filters
+def test_a_filters_time_limit_covers_its_calls_to_pandoc():
+    """Each call runs with what the filter has left as its "timeout", so one
+    call on a slow document (the review's 100,000 nested block quotes, over
+    15 s natively, minutes from a filter) can't outlast it."""
+    slow = ">" * 100_000
+    for request in ({"convert": [{"from": "markdown", "to": "html"}, slow]},
+                    {"read_many": [[slow], {"from": "markdown"}]}):
+        f = WasmFilter(wasm("calls"), timeout=1)
+        started = time.monotonic()
+        msg = failure(f, f"```call\n{json.dumps(request)}\n```")
+        assert msg is not None and "its time limit" in msg, msg
+        assert time.monotonic() - started < 4, request
+    # the filter's own shorter "timeout" is kept: its call fails, it goes on
+    request = {"convert": [{"from": "markdown", "to": "html", "timeout": 0.2}, slow]}
+    out = json.loads(pandoc.convert(f"```call\n{json.dumps(request)}\n```", to="json",
+                                    filters=[WasmFilter(wasm("calls"), timeout=30)]))
+    assert json.loads(out["blocks"][0]["c"][1])["error"][0] == "Timeout"
 
 
 def test_limits_are_read_as_pandoc_writes_them():

@@ -77,7 +77,9 @@ def plan(
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     try:
-        parsed = query("parse-args", args=args)
+        # (as text: a file name that isn't UTF-8 is U+FFFD here, which
+        # matters only if it names a filter; pandoc_main gets the bytes)
+        parsed = query("parse-args", args=[_text(a) for a in args])
     except PandocError:
         parsed = {}  # pandoc_main reports it, as pandoc does
     wanted = [f for f in parsed.get("filters", ()) if f.get("type") == "json"]
@@ -96,7 +98,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     sys.stdout.flush()
     sys.stderr.flush()
     try:
-        status = _core.main(tuple(a.encode() for a in (PROG, *args)), filters_json, callbacks)
+        # the bytes of each argument, as the file system's encoding gives
+        # them (pandoc_main decodes them so): any file name works
+        status = _core.main(tuple(map(os.fsencode, (PROG, *args))), filters_json, callbacks)
     except WasmFilterError as e:
         print(f"{PROG}: {e}", file=sys.stderr)
         return FILTER_FAILED
@@ -114,6 +118,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             ours = "(development)"
         print(f"{PROG}: pandoc in process, through libpandoc {ours}")
     return status
+
+
+def _text(arg: str) -> str:
+    """An argument as UTF-8 text, bytes that aren't text as U+FFFD."""
+    return os.fsencode(arg).decode("utf-8", "replace")
 
 
 def run_main() -> None:

@@ -2,17 +2,19 @@
 
 A wasm filter is a pandoc JSON filter built for WASI (``wasm32-wasip1``),
 such as a panir Rust filter: the document on stdin, the new one on stdout,
-the output format as its first argument, pandoc's variables in its
-environment. It runs sandboxed: it sees only the directories it is given
-(the current one, read-only, by default), no network, no programs. It may
+the output format as its first argument, the variables libpandoc gives
+JSON filters in its environment (``PANDOC_WRITER_OPTIONS`` among them). It
+runs sandboxed: it sees only the directories it is given (the current one,
+read-only, by default), no network, no programs. It may
 call pandoc through the imports of module ``libpandoc`` (libpandoc-rs's
 ``guest.rs``), which this host answers on this process's pandoc, marked
 ``"untrusted": true``: libpandoc then runs them in pandoc's sandbox, with no
 options that read or write files, fetch or run anything (its list, which
 every host shares).
 
-Limits, which pandoc has for no filter: a timeout (wall-clock, pandoc's
-calls included) and a memory limit (the filter's own memory), from
+Limits, which pandoc has for no filter: a timeout (wall-clock time, its
+calls to pandoc included: each runs with the time the filter has left as
+its ``"timeout"``) and a memory limit (the filter's own memory), from
 ``$LIBPANDOC_WASM_TIMEOUT`` (seconds, as pandoc-server's ``--timeout``) and
 ``$LIBPANDOC_WASM_MAX_MEMORY`` (bytes, or with k, m or g, as pandoc's
 ``+RTS -M``), or per filter; none by default, as pandoc.
@@ -28,6 +30,8 @@ import threading
 import time
 from collections.abc import Sequence
 from typing import Any
+
+from ._scripts import filter_env
 
 TIMEOUT_VAR = "LIBPANDOC_WASM_TIMEOUT"
 MAX_MEMORY_VAR = "LIBPANDOC_WASM_MAX_MEMORY"
@@ -133,7 +137,9 @@ class WasmFilter:
     that name no files.
 
     It fails when it runs longer than ``timeout`` seconds (its calls to
-    pandoc included) or its memory would grow past ``max_memory`` bytes.
+    pandoc included: each runs with the time the filter has left as its
+    ``"timeout"``, and one made after that fails at once) or its memory
+    would grow past ``max_memory`` bytes.
     None (the default) takes what ``$LIBPANDOC_WASM_TIMEOUT`` and
     ``$LIBPANDOC_WASM_MAX_MEMORY`` say when it runs (none if unset); 0 is no
     limit.
@@ -154,12 +160,12 @@ class WasmFilter:
         from . import pandoc_version
 
         wasmtime = _wasmtime()
-        self.name = os.fspath(path)
+        self.name = os.fsdecode(path)
         try:
             self._module = wasmtime.Module.from_file(_engine(), self.name)
         except wasmtime.WasmtimeError as e:
             raise ValueError(f"{self.name}: not a wasm filter: {e}") from None
-        self.dirs = [(os.fspath(h), g) for h, g in dirs]
+        self.dirs = [(os.fsdecode(h), g) for h, g in dirs]
         self.writable = writable
         self.timeout = timeout
         self.max_memory = max_memory
@@ -184,14 +190,9 @@ class WasmFilter:
         engine = _engine()
 
         wasi = wasmtime.WasiConfig()
-        wasi.argv = [self.name, ctx.get("format") or ""]
-        env = [("PANDOC_VERSION", self._pandoc_version),
-               ("PANDOC_READER_OPTIONS", json.dumps(ctx.get("reader-options") or {}))]
-        for var, key in (("PANDOC_INPUT_FORMAT", "input-format"),
-                         ("PANDOC_OUTPUT_FORMAT", "output-format")):
-            if ctx.get(key):
-                env.append((var, ctx[key]))
-        wasi.env = env
+        # (WASI's text: a file name that isn't UTF-8 with U+FFFD)
+        wasi.argv = [os.fsencode(self.name).decode("utf-8", "replace"), ctx.get("format") or ""]
+        wasi.env = list(filter_env(ctx, self._pandoc_version).items())
         _stdin_bytes(wasi, doc)
         out: list[bytes] = []
         wasi.stdout_custom = out.append
@@ -199,8 +200,8 @@ class WasmFilter:
         for host, guest in self.dirs:
             try:
                 wasi.preopen_dir(host, guest, self.writable)
-            except wasmtime.WasmtimeError:
-                raise RuntimeError(f"{self.name}: can't give it {host}") from None
+            except (wasmtime.WasmtimeError, UnicodeEncodeError):  # (wasmtime: UTF-8 paths)
+                raise RuntimeError(f"{self.name}: can't give it {host!r}") from None
 
         store = wasmtime.Store(engine)
         store.set_wasi(wasi)
@@ -208,10 +209,11 @@ class WasmFilter:
             store.set_limits(memory_size=max_memory)
         ticks = (2**63 if timeout is None else int(-(-timeout // _TICK)) + 1)
         store.set_epoch_deadline(ticks)
+        started = time.monotonic()
+        clock = _Clock(None if timeout is None else started + timeout)
         linker = wasmtime.Linker(engine)
         linker.define_wasi()
-        _define_libpandoc(wasmtime, linker)
-        started = time.monotonic()
+        _define_libpandoc(wasmtime, linker, clock)
 
         def failed(msg: str, interrupted: bool = False) -> WasmFilterError:
             if interrupted:
@@ -222,6 +224,7 @@ class WasmFilter:
                 msg += f" (its memory limit: {max_memory} bytes, {MAX_MEMORY_VAR})"
             return WasmFilterError(msg)
 
+        error = None
         try:
             instance = linker.instantiate(store, self._module)
             start = instance.exports(store).get("_start")
@@ -230,12 +233,17 @@ class WasmFilter:
             start(store)
         except wasmtime.ExitTrap as e:
             if e.code != 0:
-                raise failed(f"{self.name} exited with status {e.code}") from None
+                error = failed(f"{self.name} exited with status {e.code}")
         except wasmtime.Trap as e:
             interrupted = timeout is not None and e.trap_code == wasmtime.TrapCode.INTERRUPT
-            raise failed(f"{self.name}: {e}", interrupted) from None
+            error = failed(f"{self.name}: {e}", interrupted)
         except wasmtime.WasmtimeError as e:
-            raise failed(f"{self.name}: {e}") from None
+            error = failed(f"{self.name}: {e}")
+        if clock.out_of_time:
+            # its time ran out in a call to pandoc: stopped, whatever it did after
+            error = failed("", interrupted=True)
+        if error is not None:
+            raise error
         return b"".join(out)
 
 
@@ -253,10 +261,46 @@ def _stdin_bytes(wasi: Any, data: bytes) -> None:
 # -- the libpandoc imports ---------------------------------------------------------
 
 
-def _define_libpandoc(wasmtime: Any, linker: Any) -> None:
+class _Clock:
+    """A run's time limit, for its calls to pandoc: its deadline (a
+    ``time.monotonic()``; None for none), and whether a call ended past it."""
+
+    def __init__(self, deadline: float | None) -> None:
+        self.deadline = deadline
+        self.out_of_time = False
+
+    def left(self) -> float | None:
+        """The seconds the filter has left (None: no limit); a call made
+        with none left is refused as a ``"Timeout"``."""
+        if self.deadline is None:
+            return None
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            self.out_of_time = True
+            raise _Refused("the filter's time limit is reached", "Timeout")
+        return left
+
+    def check(self) -> None:
+        """After a call: past the deadline, the filter is to stop."""
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            self.out_of_time = True
+
+
+def _within(options: dict[str, Any], left: float | None) -> dict[str, Any]:
+    """Options a filter gives pandoc, within its time: their ``"timeout"``
+    the time it has left, or its own if shorter."""
+    own = options.get("timeout")
+    if left is not None and not (
+        isinstance(own, (int, float)) and not isinstance(own, bool) and 0 < own < left
+    ):
+        options["timeout"] = left
+    return options
+
+
+def _define_libpandoc(wasmtime: Any, linker: Any, clock: _Clock) -> None:
     """The ``libpandoc`` imports (libpandoc-rs's ``guest.rs``), on this
-    process's pandoc; the result of a run's last call kept for
-    ``result_len`` and ``result_read``."""
+    process's pandoc, within the filter's time (``clock``); the result of a
+    run's last call kept for ``result_len`` and ``result_read``."""
     from . import _core
 
     i32 = wasmtime.ValType.i32()
@@ -279,7 +323,8 @@ def _define_libpandoc(wasmtime: Any, linker: Any) -> None:
         try:
             status, output, kind, message, log = call()
         except _Refused as e:
-            status, output, kind, message, log = 1, b"", "PandocOptionError", str(e), b"[]"
+            status, output, kind, message, log = 1, b"", e.kind, str(e), b"[]"
+        clock.check()
         if status != 0:
             last[0] = (b"", b"", (kind or "Exception").encode(), (message or "").encode())
             return 1
@@ -295,7 +340,8 @@ def _define_libpandoc(wasmtime: Any, linker: Any) -> None:
 
     def convert(caller: Any, o: int, ol: int, i: int, il: int, has: int) -> int:
         def call() -> Any:
-            opts = _untrusted(guest_json(caller, o, ol))
+            left = clock.left()
+            opts = _within(_untrusted(guest_json(caller, o, ol)), left)
             if not has:
                 raise _Refused("a wasm filter gives convert its input")
             return _core.convert(json.dumps(opts).encode(), guest_bytes(caller, i, il))
@@ -303,16 +349,19 @@ def _define_libpandoc(wasmtime: Any, linker: Any) -> None:
 
     def read_many(caller: Any, p: int, length: int) -> int:
         def call() -> Any:
+            left = clock.left()
             req = guest_json(caller, p, length)
             if not isinstance(req, dict):
                 raise _Refused(_refusal("a request that isn't an object"))
-            req["options"] = _untrusted(req.get("options", {}))
+            req["options"] = _within(_untrusted(req.get("options", {})), left)
             return _core.read_many(json.dumps(req).encode())
         return answer(call)
 
     def query(caller: Any, p: int, length: int) -> int:
-        return answer(lambda: _core.query(
-            json.dumps(_untrusted(guest_json(caller, p, length))).encode()))
+        def call() -> Any:
+            clock.left()
+            return _core.query(json.dumps(_untrusted(guest_json(caller, p, length))).encode())
+        return answer(call)
 
     def result_len(caller: Any, part: int) -> int:
         return len(last[0][part]) if 0 <= part < 4 else 0
@@ -340,7 +389,12 @@ def _define_libpandoc(wasmtime: Any, linker: Any) -> None:
 
 
 class _Refused(Exception):
-    """A call pandoc isn't asked: its answer is a PandocOptionError."""
+    """A call pandoc isn't asked: its answer is an error of this kind (a
+    PandocOptionError, or a Timeout)."""
+
+    def __init__(self, message: str, kind: str = "PandocOptionError") -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 def _refusal(what: str) -> str:
@@ -349,16 +403,9 @@ def _refusal(what: str) -> str:
 
 def _untrusted(what: Any) -> dict[str, Any]:
     """What a filter gives pandoc (options, or a query), marked
-    ``"untrusted": true`` for libpandoc (1.7) to check: it accepts only what
+    ``"untrusted": true`` for libpandoc to check: it accepts only what
     reads and writes no files, fetches nothing and runs nothing, and turns
     pandoc's sandbox on. The list is libpandoc's, the same for every host."""
-    from . import _core
-
-    v = _core.abi_version()
-    if v < 1007:
-        raise _Refused(_refusal(
-            f'a call from a wasm filter needs libpandoc 1.7 ("untrusted"), '
-            f"not {v // 1000}.{v % 1000}"))
     if not isinstance(what, dict):
         raise _Refused(_refusal("options that aren't an object"))
     return {**what, "untrusted": True}

@@ -1,8 +1,10 @@
 """The high-level API behaves like the pandoc CLI."""
 
+import pickle
 import sys
 import sysconfig
 import threading
+import time
 
 import panir
 import pytest
@@ -13,6 +15,9 @@ import libpandoc as pandoc
 def test_versions():
     assert pandoc.pandoc_version().startswith("3.")
     assert pandoc.pandoc_api_version()[:2] == panir.PANDOC_API_VERSION[:2]
+    # libpandoc.h's rule, checked at import (natively and in Pyodide)
+    abi, need = pandoc._core.abi_version(), pandoc._core.MIN_ABI_VERSION
+    assert need == 1011 and abi // 1000 == need // 1000 and abi >= need
 
 
 @pytest.mark.skipif(not sysconfig.get_config_var("Py_GIL_DISABLED"),
@@ -49,6 +54,16 @@ def test_convert_files(tmp_path):
     assert dst.read_text() == "<p><em>x</em></p>\n"
 
 
+def test_paths_as_text_bytes_or_path_objects(tmp_path):
+    src = tmp_path / "café.md"
+    src.write_text("*x*")
+    for p in (src, str(src), bytes(src)):
+        assert pandoc.convert(input_files=[p]) == "<p><em>x</em></p>\n"
+        assert pandoc.run([p]) == b"<p><em>x</em></p>\n"
+    # in read_many's options too
+    assert pandoc.read_many(["x"], data_dir=tmp_path, resource_path=[tmp_path])[0].blocks
+
+
 def test_relative_paths(tmp_path, monkeypatch):
     # relative to Python's working directory, in Pyodide too
     monkeypatch.chdir(tmp_path)
@@ -82,6 +97,62 @@ def test_warnings():
         pandoc.convert("![](does-not-exist.png)", to="docx")
 
 
+# The review's 100,000 nested block quotes: over 15 s without a time limit.
+SLOW = ">" * 100_000
+
+
+def test_a_call_has_a_time_limit():
+    started = time.monotonic()
+    with pytest.raises(pandoc.PandocTimeoutError) as e:
+        pandoc.convert(SLOW, to="html", timeout=0.5)
+    assert time.monotonic() - started < 5
+    assert e.value.kind == "Timeout" and isinstance(e.value, pandoc.PandocError)
+    assert isinstance(e.value, TimeoutError)
+    assert repr(pickle.loads(pickle.dumps(e.value))) == repr(e.value)
+    with pytest.raises(TimeoutError):
+        pandoc.read(SLOW, timeout=0.5)
+    # read_many: the texts not read in time, in their places
+    started = time.monotonic()
+    a, slow, b = pandoc.read_many(["*a*", SLOW, "b"], timeout=0.5, return_exceptions=True)
+    assert time.monotonic() - started < 5
+    assert isinstance(slow, pandoc.PandocTimeoutError), slow
+    assert a.blocks and b.blocks
+    with pytest.raises(pandoc.PandocTimeoutError, match="reading input 1"):
+        pandoc.read_many(["a", SLOW], timeout=0.5)
+    # and the next call works
+    assert pandoc.convert("*hi*") == "<p><em>hi</em></p>\n"
+
+
+def test_a_python_filter_runs_to_its_end_past_the_time_limit():
+    """A Python filter is code in this process, which pandoc's time limit
+    can't stop: the conversion fails when it returns."""
+    ran = []
+
+    def slow(doc):
+        time.sleep(1)
+        ran.append(True)
+
+    started = time.monotonic()
+    with pytest.raises(pandoc.PandocTimeoutError):
+        pandoc.convert("x", filters=[slow], timeout=0.2)
+    assert ran == [True] and time.monotonic() - started >= 1
+
+
+def test_read_many_warns_as_convert_does():
+    """Its reader's messages are in its log (libpandoc 1.9; before, on
+    standard error), issued as PandocWarnings."""
+    with pytest.warns(pandoc.PandocWarning, match="Could not load include file") as w:
+        docs = pandoc.read_many(["\\input{no-such-file} x", "y"], "latex")
+    assert len(docs) == 2 and len(w) == 1
+
+
+def test_read_many_keeps_each_texts_error():
+    a, loop, c = pandoc.read_many(["a", "\\newcommand{\\a}{\\a}\\a", "c"], "latex",
+                                  return_exceptions=True)
+    assert a.blocks and c.blocks
+    assert type(loop) is pandoc.PandocError and loop.message.startswith("reading input 1:")
+
+
 def test_lua_filter(tmp_path):
     f = tmp_path / "upper.lua"
     f.write_text("function Str(s) return pandoc.Str(s.text:upper()) end\n")
@@ -111,19 +182,21 @@ def test_threads():
 
 def test_num_threads():
     assert pandoc.num_threads() >= 1
-    # Setting the number: in a process of its own, before pandoc's threads
-    # have grown (from libpandoc 1.9 it changes nothing after that, and
-    # another test here may have run calls in parallel already).
+    # Setting the number: in a process of its own, where pandoc's threads
+    # haven't grown yet (it changes nothing after that, and another test
+    # here may have run calls in parallel already).
     import subprocess
     import sys
     code = (
         "import libpandoc as p\n"
         "a = p.set_num_threads(2); b = p.num_threads(); c = p.convert('*x*')\n"
-        "print(a, b, p.set_num_threads(0), c.strip())"
+        "d = p.set_num_threads(0)\n"  # (clamped)
+        "p.set_num_threads(2); p.read_many(['a', 'b'])\n"  # (two texts: grown)
+        "print(a, b, d, c.strip(), p.set_num_threads(1), p.num_threads())"
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     most = min(2, __import__("os").cpu_count() or 1)
-    assert out.stdout.strip() == f"{most} {most} 1 <p><em>x</em></p>"
+    assert out.stdout.strip() == f"{most} {most} 1 <p><em>x</em></p> {most} {most}"
 
 
 def test_num_threads_from_the_environment():
@@ -141,7 +214,6 @@ def test_untrusted(tmp_path):
     # libpandoc's "untrusted": only options that read, write, fetch and run
     # nothing, with pandoc's sandbox on
     assert pandoc.convert("*hi*", to="html", untrusted=True) == "<p><em>hi</em></p>\n"
-    # (citeproc: refused before libpandoc 1.8, which runs it inside the sandbox)
     for opts in ({"filters": ["x.lua"]}, {"output_file": str(tmp_path / "o")},
                  {"to": "pdf"}, {"data_dir": str(tmp_path)}):
         with pytest.raises(pandoc.PandocError, match="not allowed for untrusted code"):

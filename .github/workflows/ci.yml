@@ -39,17 +39,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # checked against the release's SHA256SUMS and attestations
       - name: Fetch libpandoc
         env:
           GH_TOKEN: ${{ github.token }}
+          SUBDIR: ${{ matrix.subdir }}
         run: |
-          gh release download "$LIBPANDOC_RELEASE" -R "$LIBPANDOC_REPO" -p "libpandoc-${{ matrix.subdir }}.tar.gz"
-          mkdir libpandoc && tar -xzf "libpandoc-${{ matrix.subdir }}.tar.gz" -C libpandoc
-          echo "LIBPANDOC_PREFIX=$PWD/libpandoc" >> "$GITHUB_ENV"
+          files=("libpandoc-$SUBDIR.tar.gz")
           # and musl's, for the musllinux wheels
+          if [[ $RUNNER_OS == Linux ]]; then files+=("libpandoc-$SUBDIR-musl.tar.gz"); fi
+          scripts/fetch-libpandoc.sh "$RUNNER_TEMP/dl" "${files[@]}"
+          # (from standard input: on Windows tar reads "D:..." as a host)
+          mkdir libpandoc && tar -xz -C libpandoc < "$RUNNER_TEMP/dl/libpandoc-$SUBDIR.tar.gz"
+          echo "LIBPANDOC_PREFIX=$PWD/libpandoc" >> "$GITHUB_ENV"
           if [[ $RUNNER_OS == Linux ]]; then
-            gh release download "$LIBPANDOC_RELEASE" -R "$LIBPANDOC_REPO" -p "libpandoc-${{ matrix.subdir }}-musl.tar.gz"
-            mkdir libpandoc-musl && tar -xzf "libpandoc-${{ matrix.subdir }}-musl.tar.gz" -C libpandoc-musl
+            mkdir libpandoc-musl && tar -xz -C libpandoc-musl < "$RUNNER_TEMP/dl/libpandoc-$SUBDIR-musl.tar.gz"
           fi
 
       - uses: actions/setup-python@v7
@@ -185,7 +189,7 @@ jobs:
           node-version: 26
       - name: libpandoc.wasm and libpandoc's hosts
         run: |
-          gh release download "$LIBPANDOC_RELEASE" -R "$LIBPANDOC_REPO" -p libpandoc.wasm -p libpandoc-pyodide.mjs -D "$RUNNER_TEMP/wasm"
+          scripts/fetch-libpandoc.sh "$RUNNER_TEMP/wasm" libpandoc.wasm libpandoc-pyodide.mjs
           git clone --depth 1 "https://github.com/$LIBPANDOC_REPO" "$RUNNER_TEMP/libpandoc"
           (cd "$RUNNER_TEMP/libpandoc/wasm" && npm ci)
       - name: The wheel
