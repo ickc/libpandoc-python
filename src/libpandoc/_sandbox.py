@@ -35,9 +35,10 @@ pandoc is read in its sandbox. Limits: ``$LIBPANDOC_WASM_TIMEOUT`` and
 cancel token stops the module from outside, as the time limit does.
 
 The module: ``$LIBPANDOC_WASM``, else libpandoc's release's, downloaded
-once into the user's cache and checked against the release's
-``SHA256SUMS``. Compiled once per process, and cached on disk by wasmtime
-(the first compilation takes about 20 s and 8 GB of memory).
+once into the user's cache with its licence notices beside it
+(``libpandoc-wasm-THIRD-PARTY-NOTICES.txt``) and checked against the
+release's ``SHA256SUMS``. Compiled once per process, and cached on disk by
+wasmtime (the first compilation takes about 20 s and 8 GB of memory).
 
 Threads: the module runs on the calling thread, and so do the filters it
 calls back. Its stack needs little: GHC's code keeps its stack in the
@@ -279,10 +280,15 @@ def _cache_dir() -> str:
     return os.path.join(base, "libpandoc", RELEASE)
 
 
+# What is downloaded: the module, and its licence notices beside it.
+NOTICES = "libpandoc-wasm-THIRD-PARTY-NOTICES.txt"
+
+
 def _download(path: str) -> None:
-    """libpandoc.wasm of the release, checked against its SHA256SUMS,
-    written beside ``path`` and then moved there (never half there; two
-    processes at once each write their own)."""
+    """libpandoc.wasm of the release and its notices, beside it, each
+    checked against the release's SHA256SUMS, written beside where it goes
+    and then moved there (never half there; two processes at once each
+    write their own); the module last."""
     import hashlib
     import urllib.request
 
@@ -291,28 +297,30 @@ def _download(path: str) -> None:
     try:
         with urllib.request.urlopen(RELEASE_URL + "SHA256SUMS", timeout=60) as r:
             sums = r.read().decode()
-        want = next((f[0] for f in map(str.split, sums.splitlines())
-                     if f[1:] in (["libpandoc.wasm"], ["*libpandoc.wasm"])), None)
-        if want is None:
-            raise _refused(f"libpandoc.wasm is not in {RELEASE_URL}SHA256SUMS", "PandocAppError")
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        part = f"{path}.{os.getpid()}-{threading.get_ident()}.part"
-        digest = hashlib.sha256()
-        try:
-            with urllib.request.urlopen(RELEASE_URL + "libpandoc.wasm", timeout=60) as r, \
-                    open(part, "wb") as f:
-                while chunk := r.read(1 << 20):
-                    digest.update(chunk)
-                    f.write(chunk)
-            if digest.hexdigest() != want:
-                raise _refused(
-                    f"{RELEASE_URL}libpandoc.wasm: SHA-256 {digest.hexdigest()}, but SHA256SUMS "
-                    f"says {want} (the release may be being replaced: try again in a few "
-                    f"minutes)", "PandocAppError")
-            os.replace(part, path)
-        finally:
-            with contextlib.suppress(OSError):
-                os.remove(part)
+        for name, target in ((NOTICES, os.path.join(os.path.dirname(path), NOTICES)),
+                             ("libpandoc.wasm", path)):
+            want = next((f[0] for f in map(str.split, sums.splitlines())
+                         if f[1:] in ([name], ["*" + name])), None)
+            if want is None:
+                raise _refused(f"{name} is not in {RELEASE_URL}SHA256SUMS", "PandocAppError")
+            part = f"{target}.{os.getpid()}-{threading.get_ident()}.part"
+            digest = hashlib.sha256()
+            try:
+                with urllib.request.urlopen(RELEASE_URL + name, timeout=60) as r, \
+                        open(part, "wb") as f:
+                    while chunk := r.read(1 << 20):
+                        digest.update(chunk)
+                        f.write(chunk)
+                if digest.hexdigest() != want:
+                    raise _refused(
+                        f"{RELEASE_URL}{name}: SHA-256 {digest.hexdigest()}, but SHA256SUMS "
+                        f"says {want} (the release may be being replaced: try again in a few "
+                        f"minutes)", "PandocAppError")
+                os.replace(part, target)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.remove(part)
     except OSError as e:  # (urllib's errors among them)
         raise _refused(f"downloading libpandoc.wasm: {e} (or set {WASM_VAR})",
                        "PandocAppError") from None

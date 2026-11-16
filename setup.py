@@ -7,9 +7,18 @@ except on free-threaded CPython, which has none (a cp314t wheel).
 
 LIBPANDOC_PYODIDE=1: no extension, for the wheel for Pyodide
 (scripts/pyodide-wheel.sh), which carries libpandoc.wasm in _pyodide/.
+
+The wheel's licence files: the package's own (COPYING.md, the GPL), and
+those of the libpandoc it bundles, from the prefix: libpandoc's COPYING.md
+and THIRD-PARTY-NOTICES (what libpandoc is built from, and the C libraries
+a repair tool grafts beside it: GMP, libffi; on musl libstdc++ and libgcc),
+or for Pyodide libpandoc.wasm's notices; copied into libpandoc-licenses/.
+A prefix without them (a development build, conda's, which doesn't bundle
+libpandoc) gives the package's own only.
 """
 
 import os
+import shutil
 import sys
 import sysconfig
 from pathlib import Path
@@ -46,6 +55,23 @@ abi3 = not sysconfig.get_config_var("Py_GIL_DISABLED")
 
 pyodide = os.environ.get("LIBPANDOC_PYODIDE") == "1"
 
+
+def license_files() -> list[str]:
+    bundled = Path("libpandoc-licenses")
+    shutil.rmtree(bundled, ignore_errors=True)
+    if pyodide:
+        given = [Path("src/libpandoc/_pyodide/libpandoc-wasm-THIRD-PARTY-NOTICES.txt")]
+    else:
+        given = [prefix / "COPYING.md", prefix / "THIRD-PARTY-NOTICES"]
+    files = ["COPYING.md"]
+    for f in given:
+        if f.is_file():
+            bundled.mkdir(exist_ok=True)
+            shutil.copyfile(f, bundled / f.name)
+            files.append(f"{bundled.name}/{f.name}")
+    return files
+
+
 setup(
     ext_modules=[] if pyodide else [
         Extension(
@@ -60,6 +86,7 @@ setup(
             py_limited_api=abi3,
         )
     ],
-    package_data={"libpandoc": ["_pyodide/*"]} if pyodide else {},
+    package_data={"libpandoc": ["_pyodide/*.wasm", "_pyodide/*.mjs"]} if pyodide else {},
+    license_files=license_files(),
     options={"bdist_wheel": {"py_limited_api": "cp311"}} if abi3 and not pyodide else {},
 )

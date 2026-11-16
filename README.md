@@ -479,4 +479,13 @@ encoding and decoding of the JSON is most of it.
 
 ## License
 
-GPL-2.0-or-later, as pandoc: the package links pandoc.
+The package's own code is GPL-2.0-or-later (`COPYING.md`), as pandoc's:
+it links pandoc. What it loads is libpandoc, under the GPL, version 2, as
+a whole (pandoc and about 200 Haskell packages, GHC's runtime and a few C
+libraries, each under its own licence). A wheel bundles it, and carries
+among its licence files (`*.dist-info/licenses/libpandoc-licenses/`)
+libpandoc's `COPYING.md` and `THIRD-PARTY-NOTICES` from the release it was
+built with, which also cover what the wheel tools graft beside it (GMP and
+libffi; on musl libstdc++ and libgcc); the Pyodide wheel, libpandoc.wasm's
+`libpandoc-wasm-THIRD-PARTY-NOTICES.txt`. The directory sandbox downloads
+libpandoc.wasm, whose notices are beside it in the release.

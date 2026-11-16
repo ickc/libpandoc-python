@@ -833,20 +833,26 @@ def test_the_module_is_checked(lab, tmp_path, monkeypatch):
     monkeypatch.setenv("LIBPANDOC_WASM", str(tmp_path / "nope.wasm"))
     with pytest.raises(pandoc.PandocError, match="not libpandoc.wasm"):
         pandoc.convert("x", to="html", sandbox={"read": []})
+    import hashlib
+
     served = tmp_path / "release"
     served.mkdir()
     (served / "libpandoc.wasm").write_bytes(b"\0asm-not-really")
-    (served / "SHA256SUMS").write_text(f"{'0' * 64}  libpandoc.wasm\n")
+    (served / _sandbox.NOTICES).write_bytes(b"notices\n")
+    notices = hashlib.sha256(b"notices\n").hexdigest() + f"  {_sandbox.NOTICES}\n"
+    (served / "SHA256SUMS").write_text(f"{'0' * 64}  libpandoc.wasm\n{notices}")
     monkeypatch.setattr(_sandbox, "RELEASE_URL", served.as_uri() + "/")
     target = tmp_path / "cache" / "libpandoc.wasm"
     with pytest.raises(pandoc.PandocError, match="SHA256SUMS says 0000"):
         _sandbox._download(str(target))
-    assert not target.parent.exists() or list(target.parent.iterdir()) == []
-    import hashlib
+    assert not target.exists()
     digest = hashlib.sha256(b"\0asm-not-really").hexdigest()
-    (served / "SHA256SUMS").write_text(f"{digest} *libpandoc.wasm\n")
+    (served / "SHA256SUMS").write_text(f"{digest} *libpandoc.wasm\n{notices}")
     _sandbox._download(str(target))
-    assert target.read_bytes() == b"\0asm-not-really" and list(target.parent.iterdir()) == [target]
+    # the module, and its licence notices beside it
+    assert target.read_bytes() == b"\0asm-not-really"
+    assert sorted(p.name for p in target.parent.iterdir()) == [_sandbox.NOTICES, target.name]
+    assert (target.parent / _sandbox.NOTICES).read_text() == "notices\n"
 
 
 # -- pandocpy with LIBPANDOC_SANDBOX and LIBPANDOC_SANDBOX_WRITE ---------------------

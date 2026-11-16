@@ -8,4 +8,5 @@ __pycache__/
 raw/
 *.so
 wheelhouse/
+libpandoc-licenses/
 src/libpandoc/_pyodide/
