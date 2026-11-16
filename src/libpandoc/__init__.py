@@ -23,6 +23,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import sys
 import warnings
 from collections.abc import Iterable, Mapping, Sequence
@@ -127,7 +128,24 @@ def _render_log_message(msg: dict[str, Any]) -> str:
 def _encode(source: Source) -> bytes | None:
     if source is None or isinstance(source, bytes):
         return source
-    return source.encode("utf-8")
+    if isinstance(source, str):
+        return source.encode("utf-8")
+    raise TypeError(
+        f"the source is text (str) or bytes, not {type(source).__name__} "
+        f"(files are named in input_files)"
+    )
+
+
+def _input(source: Source, opts: Mapping[str, Any], fn: str) -> bytes | None:
+    """The input of a conversion: ``source``, or None for the options'
+    input files. With neither, pandoc would read this process's standard
+    input and close it, so that ``sys.stdin`` stops working: refused."""
+    if source is None and not (opts.get("input-files") or opts.get("input-file")):
+        raise TypeError(
+            f"{fn}() needs a source or input_files (for standard input: "
+            f"{fn}(sys.stdin.buffer.read(), ...))"
+        )
+    return _encode(source)
 
 
 def _options(options: Mapping[str, Any] | None, kwargs: Mapping[str, Any]) -> dict[str, Any]:
@@ -136,6 +154,23 @@ def _options(options: Mapping[str, Any] | None, kwargs: Mapping[str, Any]) -> di
         key = key.rstrip("_").replace("_", "-")
         opts[key] = value
     return opts
+
+
+def _format(opts: dict[str, Any], key: str, alias: str, value: Any, default: str) -> None:
+    """Set the format a function reads or writes (read's ``from``, write's
+    ``to``): ``value`` if given, else the options' (``key``, or pandoc's
+    other name for it, ``alias``), else ``default``."""
+    if value is None:
+        value = opts.get(key) or opts.get(alias) or default
+    opts.pop(alias, None)
+    opts[key] = value
+
+
+def _refuse(opts: Mapping[str, Any], keys: Iterable[str], fn: str, why: str) -> None:
+    """A TypeError for options a function would override or ignore."""
+    given = [k for k in keys if k in opts]
+    if given:
+        raise TypeError(f"{fn}() doesn't take {', '.join(map(repr, given))}: {why}")
 
 
 def _dumps(value: Any) -> bytes:
@@ -238,10 +273,19 @@ def _text_writers() -> frozenset[str]:
 
 
 def _is_text_format(to: Any) -> bool:
-    if not isinstance(to, str):
+    if not isinstance(to, str) or ".lua" in to.lower():  # (a Lua writer's path: my-writer.lua)
         return True
-    base = to.split("+")[0].split("-")[0]
-    return base in _text_writers() or base.endswith(".lua")
+    return re.split("[+-]", to, maxsplit=1)[0] in _text_writers()
+
+
+def _output(out: bytes, opts: Mapping[str, Any]) -> str | bytes:
+    """What a conversion returns: ``""`` if it wrote a file, else its
+    output, as text for a text format (``to``, or its other name
+    ``writer``)."""
+    target = opts.get("output-file")
+    if target is not None and os.fsdecode(target) != "-":  # ("-", as None: standard output)
+        return ""
+    return out.decode("utf-8") if _is_text_format(opts.get("to") or opts.get("writer") or "html") else out
 
 
 def convert(
@@ -278,16 +322,19 @@ def convert(
         convert(options={"input-files": ["a.md"], "output-file": "a.pdf"})
     """
     opts = _options(options, kwargs)
+    return _output(_convert(_input(source, opts, "convert"), opts), opts)
+
+
+def _convert(source: bytes | None, opts: Mapping[str, Any]) -> bytes:
+    """pandoc's output for these options, filters in Python included."""
     filters = opts.get("filters") or ()
+    if isinstance(filters, (str, bytes, os.PathLike)):
+        raise TypeError(f"filters is a list, not one filter: filters=[{filters!r}]")
     callbacks, entries = _callbacks(filters, opts)
     if callbacks:
         pandoc_opts = {**opts, "filters": entries}
-        out = _check(*_core.convert_filters(_dumps(pandoc_opts), _encode(source), callbacks))
-    else:
-        out = _check(*_core.convert(_dumps(opts), _encode(source)))
-    if "output-file" in opts:
-        return ""
-    return out.decode("utf-8") if _is_text_format(opts.get("to", "html")) else out
+        return _check(*_core.convert_filters(_dumps(pandoc_opts), source, callbacks))
+    return _check(*_core.convert(_dumps(opts), source))
 
 
 def _is_python_filter(f: Any) -> bool:
@@ -437,8 +484,12 @@ def run(args: Sequence[str], input: Source = None) -> bytes:
     that informational options such as ``--version`` are rejected: use
     ``pandoc_version()`` etc. instead. They are text, paths or bytes, and
     must be UTF-8 (libpandoc's ``pandoc_convert_args``): a file name that
-    isn't is a ValueError (``pandocpy`` takes any).
+    isn't is a ValueError (``pandocpy`` takes any). With no ``input`` and
+    no input files in the arguments, pandoc reads this process's standard
+    input, as the command does, and closes it.
     """
+    if isinstance(args, (str, bytes)):
+        raise TypeError("run() takes a list of arguments, not one string (shlex.split(s))")
     return _check(*_core.convert_args(tuple(map(_arg, args)), _encode(input)))
 
 
@@ -450,16 +501,18 @@ def _arg(a: str | bytes | os.PathLike[Any]) -> bytes:
         raise ValueError(f"not UTF-8, which run's arguments must be: {s!r}") from None
 
 
-def read(source: Source = None, from_: str | Conversion = "markdown", /,
+def read(source: Source = None, from_: str | Conversion | None = None,
          options: Mapping[str, Any] | None = None, **kwargs: Any) -> Pandoc:
     """Parse ``source`` into a document (``panir.Pandoc``).
 
-    ``from_`` is a format, or, in a filter, the conversion the filter runs
-    in (``ctx.conversion``): then ``source`` is read the way that
-    conversion reads its input, as with ``read_many``.
+    ``from_`` is a format (default: the options' ``from``, else markdown),
+    or, in a filter, the conversion the filter runs in
+    (``ctx.conversion``): then ``source`` is read the way that conversion
+    reads its input, as with ``read_many``.
 
     Otherwise other options (``input_files``, reader extensions in
-    ``from_``, Lua ``filters``, ``timeout``, ...) apply as in ``convert``.
+    ``from_``, ``filters``, ``timeout``, ...) apply as in ``convert``; those
+    about the output (``to``, ``output_file``) are a TypeError.
     """
     if isinstance(from_, Conversion):
         if not isinstance(source, (str, bytes)):
@@ -467,13 +520,13 @@ def read(source: Source = None, from_: str | Conversion = "markdown", /,
         text = source.decode("utf-8") if isinstance(source, bytes) else source
         return read_many([text], from_, options, **kwargs)[0]
     opts = _options(options, kwargs)
-    opts.update({"from": from_, "to": "json"})
-    opts.pop("output-file", None)
-    out = _check(*_core.convert(_dumps(opts), _encode(source)))
-    return Pandoc.from_json(json.loads(out))
+    _refuse(opts, ("to", "writer", "output-file"), "read", "it gives the document")
+    _format(opts, "from", "reader", from_, "markdown")
+    opts["to"] = "json"
+    return Pandoc.from_json(json.loads(_convert(_input(source, opts, "read"), opts)))
 
 
-def read_many(sources: Iterable[str], from_: str | Conversion = "markdown", /,
+def read_many(sources: Iterable[str], from_: str | Conversion | None = None,
               options: Mapping[str, Any] | None = None, *, return_exceptions: bool = False,
               **kwargs: Any) -> list[Any]:
     """Parse many texts, each on its own, in parallel: their documents.
@@ -483,7 +536,8 @@ def read_many(sources: Iterable[str], from_: str | Conversion = "markdown", /,
     cores, much cheaper than a ``read`` each. ``from_`` is a format, or the
     conversion a filter runs in (``ctx.conversion``), to read the way it
     reads its input. Options that affect reading apply (``tab_stop``,
-    ``abbreviations``, ``resource_path``, ``sandbox``, ...), and
+    ``abbreviations``, ``resource_path``, ``sandbox``, ...; others are a
+    ``TypeError``), and
     ``timeout`` (seconds), the whole call's: it returns within about that
     long, a text not read by then failing with ``PandocTimeoutError``.
     Warnings (an include file not found) are issued as ``PandocWarning``, as
@@ -496,9 +550,15 @@ def read_many(sources: Iterable[str], from_: str | Conversion = "markdown", /,
 
         docs = libpandoc.read_many(cells, ctx.conversion)
     """
+    if isinstance(sources, (str, bytes)):
+        raise TypeError("read_many() takes a list of texts, not one text (read() reads one)")
     texts = [s if isinstance(s, str) else s.decode("utf-8") for s in sources]
-    opts = read_options(from_) if isinstance(from_, Conversion) else {"from": from_}
+    conversion = isinstance(from_, Conversion)
+    opts = read_options(from_) if conversion else {}
     opts.update(_options(options, kwargs))
+    _refuse(opts, sorted(set(opts) - _READ_MANY_OPTIONS), "read_many",
+            "it takes only the options that affect reading")
+    _format(opts, "from", "reader", None if conversion else from_, "markdown")
     request = _dumps({"options": opts, "inputs": texts})
     out = json.loads(_check(*_core.read_many(request)))
     docs: list[Any] = []
@@ -519,6 +579,9 @@ _READ_OPTIONS = frozenset({
     "preserve-tabs", "resource-path", "sandbox", "strip-comments", "tab-stop",
     "track-changes",
 })
+# What read_many's options may be (libpandoc's list): the others, which
+# libpandoc ignores, are a TypeError here rather than silently ignored.
+_READ_MANY_OPTIONS = _READ_OPTIONS | {"from", "reader", "timeout", "untrusted"}
 
 # Reader options (as pandoc gives filters) that have a defaults-file key.
 _READER_OPTIONS = ("default-image-extension", "indented-code-classes", "strip-comments",
@@ -562,12 +625,17 @@ def _conversion(context: Mapping[str, Any], options: Mapping[str, Any] | None) -
     )
 
 
-def write(doc: Pandoc, to: str = "html", /,
+def write(doc: Pandoc, to: str | None = None,
           options: Mapping[str, Any] | None = None, **kwargs: Any) -> str | bytes:
     """Render a typed document, as ``convert`` from JSON would, with its
-    options (``timeout`` and the rest)."""
+    options (``timeout`` and the rest). ``to`` is the format (default: the
+    options' ``to``, else html); options about the input (``from_``,
+    ``input_files``) are a TypeError."""
     opts = _options(options, kwargs)
-    opts.update({"from": "json", "to": to})
+    _refuse(opts, ("from", "reader", "input-files", "input-file"), "write",
+            "its input is the document")
+    _format(opts, "to", "writer", to, "html")
+    opts["from"] = "json"
     return convert(panir.dumps(doc).encode(), opts)
 
 

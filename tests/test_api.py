@@ -1,5 +1,7 @@
 """The high-level API behaves like the pandoc CLI."""
 
+import inspect
+import pathlib
 import pickle
 import sys
 import sysconfig
@@ -70,6 +72,92 @@ def test_relative_paths(tmp_path, monkeypatch):
     (tmp_path / "rel.md").write_text("# rel\n")
     assert pandoc.convert(input_files=["rel.md"], output_file="rel.html") == ""
     assert (tmp_path / "rel.html").read_text() == '<h1 id="rel">rel</h1>\n'
+
+
+# Every public function that takes options as keywords, with an example
+# call: its first argument, its named argument that is also an option (and
+# that option's name and pandoc's other name for it), a value and the
+# result expected with it.
+DOC = panir.Pandoc(panir.Para(panir.Emph("x")))
+NAMED = {
+    "convert": None,  # (only the source, which is no option)
+    "query": None,  # (its name, which is no parameter of the query)
+    "read": (r"\emph{x}", "from_", "from", "reader", "latex", DOC),
+    "read_many": ([r"\emph{x}"], "from_", "from", "reader", "latex", [DOC]),
+    "write": (DOC, "to", "to", "writer", "rst", "*x*\n"),
+}
+
+
+def test_no_argument_falls_into_the_options():
+    """A named argument given by keyword reaches its parameter, not the
+    options, where the default overwrote it: read(text, from_="latex") read
+    markdown, write(doc, to="rst") wrote HTML. The format is also taken
+    from the options, by either of pandoc's names."""
+    with_options = [
+        name for name in pandoc.__all__
+        if inspect.isfunction(f := getattr(pandoc, name))
+        and any(p.kind is p.VAR_KEYWORD for p in inspect.signature(f).parameters.values())
+    ]
+    assert sorted(with_options) == sorted(NAMED)  # (a new one: add it above)
+    for name in with_options:
+        params = inspect.signature(getattr(pandoc, name)).parameters.values()
+        assert not [p.name for p in params if p.kind is p.POSITIONAL_ONLY], name
+    for name, example in NAMED.items():
+        if example is None:
+            continue
+        f = getattr(pandoc, name)
+        first, param, option, alias, value, want = example
+        assert f(first, value) == want, name
+        assert f(first, **{param: value}) == want, name
+        assert f(first, options={option: value}) == want, name
+        assert f(first, **{alias: value}) == want, name
+
+
+def test_options_a_function_overrides_are_refused():
+    doc = pandoc.read("*x*")
+    for call in (lambda: pandoc.read("x", to="rst"),
+                 lambda: pandoc.read("x", output_file="o.json"),
+                 lambda: pandoc.write(doc, from_="latex"),
+                 lambda: pandoc.write(doc, input_files=["a.md"]),
+                 lambda: pandoc.read_many(["x"], filters=["f.lua"]),  # (libpandoc ignores these)
+                 lambda: pandoc.read_many(["x"], standalone=True)):
+        with pytest.raises(TypeError, match="doesn't take"):
+            call()
+
+
+def test_what_convert_returns(tmp_path):
+    assert pandoc.convert("x", writer="docx")[:2] == b"PK"  # (pandoc's other name for to)
+    assert pandoc.convert("x", output_file=None) == "<p>x</p>\n"  # (None, "-": no file)
+    assert pandoc.convert("x", to="docx", output_file="-")[:2] == b"PK"
+    writer = tmp_path / "my-writer.lua"  # (a "-" in a Lua writer's name)
+    writer.write_text('function Writer(doc, opts) return "WROTE" end\n')
+    assert pandoc.convert("x", to=str(writer)) == "WROTE\n"
+
+
+def test_arguments_of_the_wrong_kind():
+    with pytest.raises(TypeError, match="not one text"):
+        pandoc.read_many("abc")  # (three texts, "a", "b" and "c")
+    with pytest.raises(TypeError, match="not one string"):
+        pandoc.run("-t rst")
+    with pytest.raises(TypeError, match="not one filter"):
+        pandoc.convert("x", filters="f.lua")
+    with pytest.raises(TypeError, match="not PosixPath|not WindowsPath"):
+        pandoc.convert(pathlib.Path("a.md"))
+
+
+def test_no_input_is_refused():
+    """With neither a source nor input files, pandoc would read this
+    process's standard input and close it (sys.stdin then fails)."""
+    for call in (pandoc.convert, pandoc.read, lambda: pandoc.convert(None, input_files=[])):
+        with pytest.raises(TypeError, match="needs a source or input_files"):
+            call()
+
+
+def test_read_runs_filters_in_python():
+    def emph(doc):
+        doc.blocks[0].content[0] = panir.Emph("x")
+
+    assert pandoc.read("x", filters=[emph]) == DOC
 
 
 def test_run_is_the_cli(tmp_path):
