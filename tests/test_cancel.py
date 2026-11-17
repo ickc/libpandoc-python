@@ -247,7 +247,11 @@ def test_ctrl_c(filters):
 @needs_wasm
 def test_ctrl_c_in_the_directory_sandbox(tmp_path):
     more = f", sandbox={{'read': [{str(tmp_path)!r}]}}"
-    r, took = interrupted(SLOW_SCRIPT.format(source=repr(SLOW), more=more), wait=3)
+    # (the module loaded before the clock starts: loading it is not
+    # interruptible, and took more than the wait on a slow runner)
+    script = SLOW_SCRIPT.format(source=repr(SLOW), more=more).replace(
+        'print("started"', f'libpandoc.convert("x", to="html"{more})\nprint("started"', 1)
+    r, took = interrupted(script)
     assert "KeyboardInterrupt" in r.stderr and "ended after" in r.stdout, r
     assert took < 3, took
 
