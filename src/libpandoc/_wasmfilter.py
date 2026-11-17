@@ -36,6 +36,7 @@ import re
 import sys
 import threading
 import time
+import weakref
 from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
@@ -110,6 +111,51 @@ def limit(store: Any, timeout: float | None, max_memory: int | None) -> None:
         store.set_limits(memory_size=max_memory)
     store.set_epoch_deadline(
         _MAX_TICKS if timeout is None else min(int(-(-timeout // _TICK)) + 1, _MAX_TICKS))
+
+
+def interrupt() -> None:
+    """Advance the epoch (if wasm ran in this process): a store ``Watch``-ed
+    then checks its token at once. (Every other store's deadline comes one
+    tick, 10 ms, nearer.)"""
+    engine = _ENGINE
+    if engine is not None:
+        engine.increment_epoch()
+
+
+class Watch:
+    """A store that a cancel token stops from outside (``interrupt``), or
+    its time limit (checked at each tick of the clock, ``ticking``): its
+    epoch deadline is the next tick, and at each one this callback decides.
+    ``reason``: ``"cancelled"`` or ``"timeout"`` once it stopped the store
+    (its call fails then). Through wasmtime-py's private ``_ffi``, as
+    ``_stdin_bytes``: the callback isn't in its API."""
+
+    def __init__(self, store: Any, token: Any, timeout: float | None) -> None:
+        from wasmtime import _ffi as ffi
+
+        self.reason: str | None = None
+        deadline = None if timeout is None else time.monotonic() + timeout
+        # wasmtime_store_epoch_deadline_callback's function and finalizer
+        fn_type = ctypes.CFUNCTYPE(ctypes.c_size_t, ctypes.POINTER(ffi.wasmtime_context_t),
+                                   ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64),
+                                   ctypes.POINTER(ctypes.c_uint8))
+        finalizer = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+
+        def on_epoch(_context: Any, _data: Any, delta: Any, kind: Any) -> int:
+            if token.cancelled:
+                self.reason = "cancelled"
+            elif deadline is not None and time.monotonic() >= deadline:
+                self.reason = "timeout"
+            else:
+                delta[0], kind[0] = 1, 0  # WASMTIME_UPDATE_DEADLINE_CONTINUE
+                return 0
+            return ctypes.cast(ffi.wasmtime_error_new(b"stopped from outside"),
+                               ctypes.c_void_p).value or 0
+
+        self._callback = fn_type(on_epoch)  # (alive as long as the store: kept here)
+        ffi.wasmtime_store_epoch_deadline_callback(store.ptr(), self._callback, None,
+                                                   ctypes.cast(0, finalizer))
+        store.set_epoch_deadline(1)
 
 
 class WasmFilterError(RuntimeError):
@@ -299,15 +345,18 @@ class WasmFilter:
         wasi.argv = [os.fsencode(self.name).decode("utf-8", "replace"), ctx.get("format") or ""]
         wasi.env = list(filter_env(ctx, self._pandoc_version).items())
         _stdin_bytes(wasi, doc)
-        out: list[bytes] = []
-        wasi.stdout_custom, out_over = _capped(max_memory, out.append)
-        decoder = codecs.getincrementaldecoder("utf-8")("replace")
-        wasi.stderr_custom, err_over = _capped(max_memory, lambda b: _to_stderr(decoder, b))
         for host, guest, writable in preopens:
             try:
                 wasi.preopen_dir(host, guest, writable)
             except (wasmtime.WasmtimeError, UnicodeEncodeError):  # (wasmtime: UTF-8 paths)
                 raise RuntimeError(f"{self.name}: can't give it {host!r}") from None
+        out: list[bytes] = []
+        out_sink, out_over = _capped(max_memory, out.append)
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        err_sink, err_over = _capped(max_memory, lambda b: _to_stderr(decoder, b))
+        wasi.stdout_custom, wasi.stderr_custom = out_sink, err_sink
+        sinks = [weakref.ref(out_sink), weakref.ref(err_sink)]
+        del out_sink, err_sink  # (wasmtime's alone, until it frees them)
 
         store = wasmtime.Store(engine())
         store.set_wasi(wasi)
@@ -327,9 +376,12 @@ class WasmFilter:
                 msg += f" (its memory limit: {max_memory} bytes, {MAX_MEMORY_VAR})"
             return WasmFilterError(msg)
 
-        # The store is freed when the run ends: kept by the traceback of
-        # its error (a cycle, through this frame) until the interpreter
-        # exits, its WASI streams' callbacks into Python aborted 3.11 then.
+        # The store is freed when the run ends, not when the traceback of
+        # its error (a cycle, through this frame) goes. And the run ends once
+        # wasmtime has freed the streams' callbacks: it frees them on a
+        # thread of its own (tokio's) after the store is closed, calling
+        # Python, which crashed the process when that came after the
+        # interpreter's exit (SIGSEGV; Python 3.11 aborted during it).
         try:
             error = None
             try:
@@ -360,6 +412,16 @@ class WasmFilter:
         finally:
             store.close()
             linker.close()
+            _freed(sinks)
+
+
+def _freed(refs: Sequence[weakref.ref[Any]], seconds: float = 5.0) -> None:
+    """Wait until the objects are freed, ``seconds`` at most (polled:
+    free-threaded Python frees an object another thread let go of when its
+    own thread next runs Python)."""
+    deadline = time.monotonic() + seconds
+    while any(r() is not None for r in refs) and time.monotonic() < deadline:
+        time.sleep(0.0001)
 
 
 def _stdin_bytes(wasi: Any, data: bytes) -> None:

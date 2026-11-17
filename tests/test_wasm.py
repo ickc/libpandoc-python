@@ -280,12 +280,53 @@ def test_wasm_filters_in_threads():
 
 @needs_filters
 def test_pandocpy_with_a_failing_wasm_filter_exits(tmp_path):
-    """As pandoc's status for a failed filter (the filter's store, kept to
-    the interpreter's exit, aborted Python 3.11 there)."""
+    """As pandoc's status for a failed filter, the run's last call into
+    Python made before the interpreter's exit (see the test below: it came
+    after it in 1 process in 9 on macOS, SIGSEGV; 3.11 aborted)."""
     r = subprocess.run([sys.executable, "-m", "libpandoc", "-t", "plain", "-F", wasm("include")],
                        input=b"```include\nnonesuch.txt\n```\n", capture_output=True,
                        cwd=tmp_path, timeout=120, check=False)
     assert r.returncode == 83, r.stderr
+
+
+FREED_SCRIPT = """\
+import os, sys, weakref
+import libpandoc, panir
+from libpandoc import _wasmfilter
+
+os.sched_setaffinity(0, {min(os.sched_getaffinity(0))})
+held, refs, capped = 0, [], _wasmfilter._capped
+
+def watched(*args):  # the callbacks wasmtime is given, watched
+    sink, over = capped(*args)
+    refs.append(weakref.ref(sink))
+    return sink, over
+
+_wasmfilter._capped = watched
+f = libpandoc.WasmFilter(sys.argv[1])
+doc = panir.dumps(libpandoc.read("```include\\nnonesuch.txt\\n```\\n")).encode()
+for _ in range(20):
+    refs.clear()
+    try:
+        f.run(doc, {"format": "plain"})
+    except _wasmfilter.WasmFilterError:
+        pass
+    held += any(r() is not None for r in refs)
+print(held)
+"""
+
+
+@needs_filters
+@pytest.mark.skipif(not hasattr(os, "sched_setaffinity"), reason="one CPU for a process: Linux")
+def test_a_run_ends_once_wasmtime_has_freed_its_callbacks(tmp_path):
+    """wasmtime frees a run's standard output and error callbacks on a
+    thread of its own (tokio's) after the store is closed, calling Python:
+    after the interpreter's exit, that crashed it. A run waits for it. In a
+    process on one CPU that thread runs late: without the wait, 19 runs in
+    20 returned with the callbacks still held."""
+    r = subprocess.run([sys.executable, "-c", FREED_SCRIPT, wasm("include")], capture_output=True,
+                       text=True, cwd=tmp_path, timeout=120, check=False)
+    assert r.returncode == 0 and r.stdout.strip() == "0", r
 
 
 if sys.platform == "emscripten":  # no wasmtime in Pyodide

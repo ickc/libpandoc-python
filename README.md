@@ -48,11 +48,39 @@ pandoc.write(f(doc), "plain")
   the JSON filters pandoc runs (and Python scripts run as subprocesses),
   not code in this process (a Python filter runs to its end, and the call
   then fails) nor Lua filters. `run` and
-  `pandocpy` have none, as pandoc has none. Ctrl-C (`KeyboardInterrupt`)
-  takes effect when a call returns, or in a Python filter: the time limit
-  is what bounds a call.
+  `pandocpy` have none, as pandoc has none.
+- **Cancelling:** `cancel=` a `CancelToken` on the same functions stops a
+  call when `token.cancel()` is called, from another thread or from a
+  filter: `PandocCancelledError` (a `PandocError`), the process going on.
+  It stops what `timeout` stops (in the directory sandbox, the whole
+  conversion, Lua included). A token stays cancelled, and serves any number
+  of calls, one after another or at once. `untrusted=True` options take no
+  token (libpandoc's rule: a `PandocError`).
+
+  ```python
+  token = pandoc.CancelToken()
+  threading.Timer(5, token.cancel).start()      # a cancel button, a deadline
+  pandoc.convert(text, to="html", cancel=token)
+  ```
+
+  **Ctrl-C** (`KeyboardInterrupt`) stops a call made on the main thread
+  within milliseconds (it cancels the call's token, or one of its own),
+  natively and in the directory sandbox; not one made with `untrusted=True`
+  (no token: Ctrl-C takes effect when it returns), nor `run`. For that,
+  a call on the main thread runs on a helper thread, one for the process,
+  while the main thread waits, where Python delivers Ctrl-C: Python
+  filters pandoc calls back then run on that thread, in a copy of the
+  caller's `contextvars` context (about 8 µs a call, 2.5% of a tiny
+  conversion; a new thread for each call cost 70 µs). Measured: 35 to 60
+  ms from the signal to the process's end, natively and in the sandbox.
+  Loading libpandoc.wasm can't be interrupted: Ctrl-C (or a cancel) while
+  the sandbox loads it stops the call once it has loaded, up to 0.25 s
+  later from wasmtime's cache, up to its first compilation's 20 s
+  otherwise. `pandocpy` dies on Ctrl-C at once, as
+  pandoc does.
 - **Threads:** the GIL is released while pandoc runs, so conversions in
-  different threads run in parallel. pandoc runs on one thread per logical
+  different threads run in parallel. A Python filter runs on the thread
+  that called pandoc (for the main thread, the helper thread above). pandoc runs on one thread per logical
   core this process may use, or `$LIBPANDOC_NUM_THREADS` (read at start,
   like `$OMP_NUM_THREADS`); `num_threads()` tells the number. pandoc
   starts on one thread and grows to that number the first time it runs
@@ -86,7 +114,9 @@ pandoc.write(f(doc), "plain")
   `convert`, the options themselves. A filter may call pandoc itself
   (`convert`, or `read(text, ctx.conversion)` to parse a fragment the way
   the document was read, in pandoc's sandbox when the conversion is
-  sandboxed: "Reading fragments, from filters"). Filter scripts and wasm filters get
+  sandboxed: "Reading fragments, from filters"). Many small reads should
+  go through one `read_many`: 10,011 small markdown texts take 0.20 s
+  batched against 3.50 s with a call each (0.35 ms a call). Filter scripts and wasm filters get
   `PANDOC_WRITER_OPTIONS` in their environment, as libpandoc's JSON
   filters do.
 
@@ -186,12 +216,17 @@ unconfined. Wasm filters run in this process too, seeing the same mounts.
 `pandocpy lua` and `pandoc server` are not in the module (status 4). A
 filter that reads fragments with `read(text, ctx.conversion)` or
 `read_many` reads them in pandoc's own sandbox: no files, not even in the
-directories listed ("Reading fragments, from filters").
+directories listed ("Reading fragments, from filters"): every filter
+running in this process is told the conversion is sandboxed (the
+conversion's `sandbox`, and `PANDOC_SANDBOX=true` for scripts and wasm
+filters), where the module tells of pandoc's own sandbox only.
 
 **Limits.** `LIBPANDOC_WASM_TIMEOUT` (seconds) and
 `LIBPANDOC_WASM_MAX_MEMORY` (bytes, or with `k`, `m`, `g`), or for one
 call the sandbox's `"timeout"` and `"max-memory"`, stop a conversion past
-them, counted from the module's start; none by default, wasm's 4 GiB at
+them, counted from the module's start (as `cancel=`'s token and Ctrl-C
+stop it: from outside, wasmtime's epoch, which also advances other wasm
+runs' clocks by one tick, 10 ms); none by default, wasm's 4 GiB at
 most. A negative, infinite or NaN one is a `ValueError`. A conversion
 stopped by the time limit raises `PandocTimeoutError`, as one past
 libpandoc's `timeout=` (which works inside too, but doesn't stop Lua);
@@ -283,18 +318,28 @@ panflute's `convert_text` and pypandoc, first replace them by spaces
 `pandoc.read`'s: batch them. amsthm's 738 notes take 0.25 s read one by
 one and 0.015 s in one `read_many`.
 
+A text `read_many` can't read fails as `reading input N: ...`, N counting
+from 0: the text's place in the list given, not in the document. With
+`return_exceptions=True` each error is in its text's place in the result,
+so that a filter can map a failure back to where the text came from (a
+table's cell) and say so.
+
 **Confined when the conversion is.** Document text read this way may name
 files (LaTeX's `\input`, RST's and Org's includes). When the conversion
-the filter runs in is sandboxed, by pandoc's sandbox (`sandbox=True`) or a
-directory sandbox (`sandbox={...}`, `LIBPANDOC_SANDBOX`), the fragments
-are read in pandoc's own sandbox: they read no files, not even in the
-directories listed (the filter runs in this process, outside them). So
-they are too when that can't be told: for a conversion with no options,
-as `pandocpy`'s filters get (pandoc doesn't tell them about `--sandbox`,
-on the command line or in a defaults file) and a script makes from its
-environment (`Conversion.from_environment()`). A filter that wants the
-files read gives its own options, `read(text, ctx.conversion,
-sandbox=False)`: its code, its choice.
+the filter runs in is sandboxed, by pandoc's sandbox (`sandbox=True`,
+`--sandbox`, a defaults file, `untrusted=True`) or a directory sandbox
+(`sandbox={...}`, `LIBPANDOC_SANDBOX`), the fragments are read in pandoc's
+own sandbox: they read no files, not even in the directories listed (the
+filter runs in this process, outside them). libpandoc tells every filter
+whether pandoc's sandbox is on (the conversion's `sandbox`, from a
+callback's context; `PANDOC_SANDBOX` for scripts, which
+`Conversion.from_environment()` reads), and the directory sandbox tells
+its filters it is. The rule: a read is confined when the conversion's
+`sandbox` is true, or its options ask for a sandbox, or when nothing can
+tell (`sandbox` unknown and no options: a conversion made by hand, or a
+script's under plain pandoc). A filter that wants the files read gives its
+own options, `read(text, ctx.conversion, sandbox=False)`: its code, its
+choice.
 
 ## pandocpy
 
@@ -379,7 +424,7 @@ or a staged `dist/` prefix):
 LIBPANDOC_PREFIX=/path/to/prefix pip install .
 ```
 
-It needs libpandoc 1.11 or a later 1.x (libpandoc's rule: the same major
+It needs libpandoc 1.13 or a later 1.x (libpandoc's rule: the same major
 version, a minor at least as large), checked when the package is imported,
 for libpandoc.wasm in Pyodide too. The extension then finds the library in
 that prefix when it runs (an RPATH). `LIBPANDOC_RPATH` sets another, e.g. `$ORIGIN/...` relative to the
@@ -446,4 +491,13 @@ encoding and decoding of the JSON is most of it.
 
 ## License
 
-GPL-2.0-or-later, as pandoc: the package links pandoc.
+The package's own code is GPL-2.0-or-later (`COPYING.md`), as pandoc's:
+it links pandoc. What it loads is libpandoc, under the GPL, version 2, as
+a whole (pandoc and about 200 Haskell packages, GHC's runtime and a few C
+libraries, each under its own licence). A wheel bundles it, and carries
+among its licence files (`*.dist-info/licenses/libpandoc-licenses/`)
+libpandoc's `COPYING.md` and `THIRD-PARTY-NOTICES` from the release it was
+built with, which also cover what the wheel tools graft beside it (GMP and
+libffi; on musl libstdc++ and libgcc); the Pyodide wheel, libpandoc.wasm's
+`libpandoc-wasm-THIRD-PARTY-NOTICES.txt`. The directory sandbox downloads
+libpandoc.wasm, whose notices are beside it in the release.

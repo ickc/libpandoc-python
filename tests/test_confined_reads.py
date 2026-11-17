@@ -1,17 +1,22 @@
 """What a filter reads through pandoc with its conversion (``read(text,
 ctx.conversion)``, ``read_many``) is read in pandoc's own sandbox when the
 conversion is sandboxed, however the sandbox was asked for and however the
-filter was given; and when that can't be told (a command line's conversion,
-one a script makes from its environment).
+filter was given; and when that can't be told (a conversion made by hand,
+or from the environment under plain pandoc). libpandoc (1.13) tells every
+filter whether pandoc's sandbox is on (a callback's context, a JSON
+filter's ``PANDOC_SANDBOX``); the directory sandbox, whose filters run in
+this process outside libpandoc.wasm, tells them it is.
 
 The probe: a filter reading LaTeX, RST and Org fragments that include a
 canary inside a directory (``INSIDE-OK``) and one outside it (``CANARY``),
-and saying which it got ("latex:IO": both).
+and saying which it got ("latex:IO": both), and what it was told
+(``|True``: its conversion's ``sandbox``).
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -31,8 +36,8 @@ needs_wasm = pytest.mark.skipif(
     reason="the directory sandbox: wasmtime, and LIBPANDOC_WASM set to libpandoc.wasm")
 needs_processes = pytest.mark.skipif(sys.platform == "emscripten", reason="no processes")
 
-OPEN = "latex:IO rst:IO org:IO"
-CONFINED = "latex:-- rst:-- org:--"
+OPEN = "latex:IO rst:IO org:IO|False"
+CONFINED = "latex:-- rst:-- org:--|True"
 
 # what a probe does, as a script's text (the functions below run the same)
 SEEN = """\
@@ -48,7 +53,7 @@ def seen(conversion):
             warnings.simplefilter("ignore")  # (an include not found)
             s = panir.dumps(libpandoc.read(text, conversion, {{"from": fmt}}))
         out.append(f"{{fmt}}:" + ("I" if "INSIDE-OK" in s else "-") + ("O" if "CANARY" in s else "-"))
-    return " ".join(out)
+    return " ".join(out) + f"|{{conversion.sandbox}}"
 """
 
 # a panir script, handing its filter over in process
@@ -171,11 +176,11 @@ def ways():
 
 @ways()
 def test_unsandboxed_a_filter_reads_files(lab, way):
-    """The probe works: unsandboxed, what a filter of `convert` reads may
-    include files, as Lua's pandoc.read; but a script making its
-    conversion from its environment can't tell, and is confined."""
-    expected = CONFINED if "script from" in way or "subprocess" in way else OPEN
-    assert WAYS[way](lab, {}) == expected
+    """The probe works: unsandboxed, what a filter reads may include files,
+    as Lua's pandoc.read, and it is told so (a script that makes its
+    conversion from its environment too: PANDOC_SANDBOX=false)."""
+    assert WAYS[way](lab, {}) == OPEN
+    assert WAYS[way](lab, {"sandbox": False}) == OPEN
 
 
 @ways()
@@ -186,8 +191,10 @@ def test_pandocs_sandbox(lab, way):
 @needs_wasm
 @ways()
 def test_the_directory_sandbox(lab, way):
-    """In process, outside the module: in pandoc's own sandbox, no files,
-    not even inside the directory listed."""
+    """In process, outside the module: told that the conversion is
+    sandboxed (the module tells of pandoc's own sandbox only, which is off
+    here), and so in pandoc's own sandbox, no files, not even inside the
+    directory listed."""
     assert WAYS[way](lab, {"sandbox": lab.directory}) == CONFINED
 
 
@@ -205,14 +212,47 @@ def test_the_authors_own_options_win(lab):
     assert "INSIDE-OK" in got[0] and "CANARY" in got[0]
 
 
-def test_a_conversion_without_options_cant_tell(lab):
-    """A conversion made by hand, or from the environment, has no options:
-    read in pandoc's sandbox. Options without "sandbox" (or None) say it
-    isn't sandboxed."""
-    assert pandoc.read_options(panir.Conversion())["sandbox"] is True
-    assert "sandbox" not in pandoc.read_options(panir.Conversion(options={}))
-    assert pandoc.read_options(panir.Conversion(options={"sandbox": {"read": []}}))["sandbox"]
-    assert lab.seen(panir.Conversion(options={})) == OPEN
+def test_the_rule(lab):
+    """Sandboxed: told so, or the options ask for it, or nothing tells (no
+    `sandbox`, no options: a conversion made by hand, or from the
+    environment under plain pandoc)."""
+    C = panir.Conversion
+    for c, confined in [
+        (C(), True),
+        (C(sandbox=True), True),
+        (C(sandbox=False), False),
+        (C(options={}), False),
+        (C(options={"sandbox": None}), False),
+        (C(options={"sandbox": True}), True),
+        (C(options={"sandbox": {"read": []}}), True),
+        (C(sandbox=False, options={"sandbox": True}), True),
+        (C(sandbox=True, options={}), True),
+        (C(sandbox=None, options={"sandbox": False}), False),
+    ]:
+        assert pandoc.read_options(c).get("sandbox", False) is confined, c
+    assert lab.seen(C(sandbox=False)) == OPEN
+    assert lab.seen(C()) == CONFINED.replace("True", "None")
+    env = {**os.environ, "PANDOC_SANDBOX": "false"}
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(os, "environ", env)
+        assert C.from_environment([]).sandbox is False
+
+
+def test_a_subprocess_inherits_no_stale_variable(tmp_path, monkeypatch):
+    """A script run as a subprocess gets libpandoc's variables from its
+    conversion only, not from this process's environment."""
+    from libpandoc import _scripts
+
+    script = tmp_path / "env.py"
+    script.write_text("import json, os, sys\nsys.stdin.read()\n"
+                      "print(json.dumps({k: v for k, v in os.environ.items() if k.startswith('PANDOC_')}))\n")
+    monkeypatch.setenv("PANDOC_SANDBOX", "false")
+    monkeypatch.setenv("PANDOC_INPUT_FORMAT", "stale")
+    told = json.loads(_scripts.subprocess_run(str(script), b"{}", "html", {"PANDOC_VERSION": "x"}))
+    assert told == {"PANDOC_VERSION": "x"}
+    env = _scripts.filter_env({"sandbox": True}, "x")
+    told = json.loads(_scripts.subprocess_run(str(script), b"{}", "html", env))
+    assert told["PANDOC_SANDBOX"] == "true"
 
 
 def pandocpy(lab: Lab, args: list[str], env: dict) -> str:
@@ -229,19 +269,27 @@ SCRIPTS = pytest.mark.parametrize("kind", ["handoff", "plain", "subprocess"])
 
 @needs_processes
 @SCRIPTS
-def test_pandocpy_cant_tell(lab, kind):
-    """pandoc doesn't tell its filters about --sandbox (in the arguments or
-    a defaults file), so pandocpy's are always confined."""
-    assert pandocpy(lab, ["-F", lab.scripts[kind]], {}) == CONFINED
+def test_pandocpy_is_told(lab, kind, tmp_path):
+    """pandocpy's filters are told whether pandoc's sandbox is on, however
+    it was set (--sandbox, a defaults file: the options don't show it):
+    confined then only."""
+    assert pandocpy(lab, ["-F", lab.scripts[kind]], {}) == OPEN
     assert pandocpy(lab, ["--sandbox", "-F", lab.scripts[kind]], {}) == CONFINED
+    d = tmp_path / "d.yaml"
+    d.write_text("sandbox: true\n")
+    assert pandocpy(lab, ["-d", str(d), "-F", lab.scripts[kind]], {}) == CONFINED
 
 
 @needs_processes
 @needs_wasm
 @SCRIPTS
 def test_pandocpy_in_the_directory_sandbox(lab, kind):
+    """The security-critical case: pandoc runs in the module, which tells
+    of its own sandbox (off), and the script runs here, outside it: told
+    true by this host, and confined."""
     env = {"LIBPANDOC_SANDBOX": str(lab.inside)}
     assert pandocpy(lab, ["-F", lab.scripts[kind]], env) == CONFINED
+    assert pandocpy(lab, ["--sandbox", "-F", lab.scripts[kind]], env) == CONFINED
 
 
 @needs_processes
@@ -261,9 +309,31 @@ def test_pandocpy_an_installed_filter(lab, tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli, "installed_filters", lambda: {"probe-pkg": _Loaded(probe_pkg.filter)})
     entries, callbacks = cli.plan([{"type": "json", "path": "probe-pkg"}], cli.installed_filters())
-    out = pandoc._core.convert_filters(
-        pandoc._dumps({"to": "plain", "filters": entries}), b"x", callbacks)
-    assert pandoc._check(*out).decode().strip() == CONFINED
+    for sandbox, expected in ((False, OPEN), (True, CONFINED)):
+        out = pandoc._core.convert_filters(
+            pandoc._dumps({"to": "plain", "filters": entries, "sandbox": sandbox}), b"x", callbacks)
+        assert pandoc._check(*out).decode().strip() == expected
+
+
+WASM_FILTERS = os.environ.get("LIBPANDOC_WASM_FILTERS", "")
+
+
+@pytest.mark.skipif(not WASM_FILTERS or importlib.util.find_spec("wasmtime") is None,
+                    reason="wasm filters: LIBPANDOC_WASM_FILTERS and wasmtime")
+@pytest.mark.parametrize("options, told", [
+    ({}, "false"), ({"sandbox": True}, "true"),
+    pytest.param({"sandbox": "directory"}, "true", marks=needs_wasm),
+])
+def test_a_wasm_filter_is_told(lab, options, told):
+    """A wasm filter's PANDOC_SANDBOX: its calls into pandoc are in pandoc's
+    sandbox always ("untrusted"); what it reads itself is its own
+    directories'."""
+    if options.get("sandbox") == "directory":
+        options = {"sandbox": lab.directory}
+    out = pandoc.convert("x", to="json", filters=[os.path.join(WASM_FILTERS, "conversion.wasm")],
+                         **options)
+    blocks = json.loads(out)["blocks"]
+    assert json.loads(blocks[-1]["c"][1])["sandbox"] == told
 
 
 class _Loaded:

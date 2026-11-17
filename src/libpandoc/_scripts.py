@@ -4,8 +4,8 @@ A filter that is a Python script (``.py``, or a Python ``#!`` line) runs in
 this process instead of a new one: as its own ``__main__``, with the
 document as its standard input, the output format as its argument, the
 environment variables libpandoc gives JSON filters (pandoc's, and the
-formats with extensions and ``PANDOC_WRITER_OPTIONS``), and its standard
-output as the result. That serves
+formats with extensions, ``PANDOC_WRITER_OPTIONS`` and ``PANDOC_SANDBOX``),
+and its standard output as the result. That serves
 any framework (panflute, pandocfilters, panir, plain JSON) exactly as its
 own code runs, minus starting a Python process and importing it all again.
 A panir script's ``f.main()`` hands its ``Filter`` over instead, which then
@@ -125,13 +125,22 @@ class ScriptFailed(RuntimeError):
     """A Python filter script failed."""
 
 
+# What libpandoc may set for a JSON filter, beside pandoc's own: a filter
+# run as a subprocess doesn't inherit this process's value of one its
+# conversion doesn't set.
+LIBPANDOC_VARS = ("PANDOC_INPUT_FORMAT", "PANDOC_OUTPUT_FORMAT", "PANDOC_WRITER_OPTIONS",
+                  "PANDOC_SANDBOX")
+
+
 def filter_env(ctx: Mapping[str, Any], pandoc_version: str) -> dict[str, str]:
     """The environment variables a JSON filter run by libpandoc gets, from a
     callback's context: pandoc's (``PANDOC_VERSION``,
     ``PANDOC_READER_OPTIONS``) and libpandoc's (the formats with extensions,
     ``PANDOC_WRITER_OPTIONS``: without ``variables`` if it would be longer
     than 32,000 bytes, an environment variable's limit on Windows, as
-    libpandoc does)."""
+    libpandoc does; ``PANDOC_SANDBOX``, ``"true"`` or ``"false"``, whether
+    the conversion is sandboxed: the context's ``"sandbox"``, which the
+    directory sandbox sets to true)."""
     env = {
         "PANDOC_VERSION": pandoc_version,
         "PANDOC_READER_OPTIONS": json.dumps(ctx.get("reader-options") or {}),
@@ -146,13 +155,15 @@ def filter_env(ctx: Mapping[str, Any], pandoc_version: str) -> dict[str, str]:
         if len(text) > 32_000:
             text = json.dumps({k: v for k, v in writer.items() if k != "variables"})
         env["PANDOC_WRITER_OPTIONS"] = text
+    sandbox = ctx.get("sandbox")
+    if isinstance(sandbox, bool):
+        env["PANDOC_SANDBOX"] = "true" if sandbox else "false"
     return env
 
 
 def callback(
     path: str,
     pandoc_version: str,
-    conversion: Callable[..., Any],
     *,
     options: Mapping[str, Any] | None = None,
     in_process: bool = True,
@@ -171,9 +182,7 @@ def callback(
         if not in_process:
             return subprocess_run(path, doc, fmt, env, timeout)
         try:
-            return _in_process(
-                path, doc, fmt, env, lambda fs: _run_filters(fs, doc, ctx, conversion, options)
-            )
+            return _in_process(path, doc, fmt, env, lambda fs: _run_filters(fs, doc, ctx, options))
         except Exception as e:  # noqa: BLE001  whatever the script raised
             why = str(e) if isinstance(e, ScriptFailed) else f"{type(e).__name__}: {e}"
             raise ScriptFailed(
@@ -185,15 +194,13 @@ def callback(
     return run
 
 
-def _run_filters(
-    fs: list[panir.Filter], doc: bytes, ctx: Mapping[str, Any], conversion: Any, options: Any
-) -> bytes:
+def _run_filters(fs: list[panir.Filter], doc: bytes, ctx: Mapping[str, Any], options: Any) -> bytes:
     """A panir script's Filters, handed over (one for each filter of its
     ``main([f, g])``): run on the document directly, in order."""
     user = None if options is None else {k: v for k, v in options.items() if k != "filters"}
     out = panir.loads(doc)
     for f in fs:
-        out = f(out, conversion=conversion(ctx, user))
+        out = f(out, conversion=panir.Conversion.from_context(ctx, user))
     return panir.dumps(out).encode()
 
 
@@ -411,13 +418,15 @@ class _Environ(os._Environ):  # type: ignore[name-defined]
 def subprocess_run(path: str, doc: bytes, fmt: str, env: Mapping[str, str],
                    timeout: float | None = None) -> bytes:
     """As pandoc runs a Python JSON filter (with this Python): its standard
-    error this process's; stopped after ``timeout`` seconds."""
+    error this process's; stopped after ``timeout`` seconds. Of libpandoc's
+    variables, only those of its conversion (none of this process's)."""
+    inherited = {k: v for k, v in os.environ.items() if k not in LIBPANDOC_VARS}
     try:
         proc = subprocess.run(
             [sys.executable, path, fmt],
             input=doc,
             stdout=subprocess.PIPE,
-            env={**os.environ, **env},
+            env={**inherited, **env},
             check=False,
             timeout=timeout,
         )

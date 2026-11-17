@@ -161,6 +161,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: scripts/fetch-libpandoc.sh "$RUNNER_TEMP/libpandoc-wasm" libpandoc.wasm
 
+      # what the wheels bundle, with its licences: libpandoc's COPYING.md
+      # and THIRD-PARTY-NOTICES (which cover the libraries auditwheel,
+      # delocate and delvewheel graft: GMP, libffi; on musl libstdc++ and
+      # libgcc), beside the package's own
+      - name: The wheels carry libpandoc's licence and notices
+        run: |
+          for w in wheelhouse/*.whl; do
+            "$PY311" -c 'import sys, zipfile; n = zipfile.ZipFile(sys.argv[1]).namelist(); missing = [f for f in sys.argv[2:] if not any(x.endswith(".dist-info/licenses/" + f) for x in n)]; sys.exit(f"{sys.argv[1]}: no {missing}" if missing else 0)' \
+              "$w" COPYING.md libpandoc-licenses/COPYING.md libpandoc-licenses/THIRD-PARTY-NOTICES
+          done
+
       - name: Test the wheel
         env:
           # every sandboxed conversion in the tests is limited (pandocpy's set
@@ -228,7 +239,8 @@ jobs:
           node-version: 26
       - name: libpandoc.wasm and libpandoc's hosts
         run: |
-          scripts/fetch-libpandoc.sh "$RUNNER_TEMP/wasm" libpandoc.wasm libpandoc-pyodide.mjs
+          scripts/fetch-libpandoc.sh "$RUNNER_TEMP/wasm" libpandoc.wasm libpandoc-pyodide.mjs \
+            libpandoc-wasm-THIRD-PARTY-NOTICES.txt
           git clone --depth 1 "https://github.com/$LIBPANDOC_REPO" "$RUNNER_TEMP/libpandoc"
           (cd "$RUNNER_TEMP/libpandoc/wasm" && npm ci)
       - name: The wheel

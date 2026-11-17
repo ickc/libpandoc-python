@@ -27,15 +27,20 @@ With ``$LIBPANDOC_SANDBOX`` or ``$LIBPANDOC_SANDBOX_WRITE`` set, it is the
 pandoc command of libpandoc.wasm, in the directory sandbox those list (see
 ``libpandoc._sandbox``): the filters above run in this process as without
 it, Lua filters inside, JSON filters not at all.
+
+Ctrl-C ends it at once, as it ends pandoc: while pandoc runs, SIGINT has
+its default action (Python's handler would run only when pandoc returned).
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import signal
 import sys
 import traceback
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from importlib.metadata import PackageNotFoundError, distributions, version
 from typing import Any
 
@@ -107,10 +112,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     command = tuple(map(os.fsencode, (PROG, *args)))
     try:
         dirs = _sandbox.from_env()
-        if dirs is not None:
-            status = _sandbox.main(command, filters_json, callbacks, dirs)
-        else:
-            status = _core.main(command, filters_json, callbacks)
+        with _default_sigint():
+            if dirs is not None:
+                status = _sandbox.main(command, filters_json, callbacks, dirs)
+            else:
+                status = _core.main(command, filters_json, callbacks)
     except WasmFilterError as e:
         print(f"{PROG}: {e}", file=sys.stderr)
         return FILTER_FAILED
@@ -128,6 +134,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             ours = "(development)"
         print(f"{PROG}: pandoc in process, through libpandoc {ours}")
     return status
+
+
+@contextlib.contextmanager
+def _default_sigint() -> Iterator[None]:
+    """SIGINT's default action meanwhile (on the main thread; elsewhere
+    nothing changes)."""
+    try:
+        before = signal.signal(signal.SIGINT, signal.SIG_DFL)
+    except ValueError:  # (not the main thread)
+        before = None
+    try:
+        yield
+    finally:
+        if before is not None:
+            signal.signal(signal.SIGINT, before)
 
 
 def _text(arg: str) -> str:

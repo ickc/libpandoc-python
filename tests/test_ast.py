@@ -1,6 +1,7 @@
 """libpandoc with panir: reading, writing, Python filters."""
 
 import json
+import sys
 from pathlib import Path
 
 import panir
@@ -167,11 +168,23 @@ def test_a_python_filter_can_call_pandoc():
 
 
 def test_a_python_filter_runs_on_the_calling_thread():
+    """Where pandoc calls it back: on the thread that called pandoc; the
+    main thread's calls run on a helper thread (so that Ctrl-C reaches the
+    main thread while pandoc runs: libpandoc._cancel), the same each time."""
     import threading
 
     threads = []
-    pandoc.convert("hi", to="html", filters=[lambda doc: threads.append(threading.get_ident())])
-    assert threads == [threading.get_ident()]
+    f = lambda doc: threads.append(threading.current_thread())
+    pandoc.convert("hi", to="html", filters=[f])
+    if sys.platform == "emscripten":  # (no threads)
+        assert threads == [threading.main_thread()]
+        return
+    pandoc.convert("hi", to="html", filters=[f])
+    assert threads[0] is threads[1] and threads[0].name == "libpandoc-calls"
+    other = threading.Thread(target=lambda: pandoc.convert("hi", to="html", filters=[f]))
+    other.start()
+    other.join()
+    assert threads[2] is other
 
 
 def test_reading_like_the_conversion_uses_the_reader_pandoc_decided_on(tmp_path):

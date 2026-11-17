@@ -8,10 +8,10 @@ version = "0.1.0"
 description = "pandoc as a Python library: in process, through libpandoc's C ABI, with its AST as Python classes"
 readme = "README.md"
 license = "GPL-2.0-or-later"
-license-files = ["COPYING.md"]
+# (license-files: setup.py's, with those of the libpandoc a wheel bundles)
 authors = [{ name = "Kolen Cheung" }]
 requires-python = ">=3.11"
-dependencies = ["panir >=0.1, <0.2"]
+dependencies = ["panir >=0.2, <0.3"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: C",
