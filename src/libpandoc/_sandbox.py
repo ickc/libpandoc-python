@@ -476,6 +476,11 @@ def _run(m: Mounts, call: tuple[Any, ...], input: bytes | None,
         limit(store, timeout, max_memory)
         if token is not None:
             watch = Watch(store, token, timeout)
+            # cancelled while the module loaded (Ctrl-C too): the epoch it
+            # advanced came before the store's deadline, which nothing would
+            # reach (the whole conversion ran); cancelled from now on, it is
+            if token.cancelled:
+                raise _refused("the call was cancelled", "Cancelled")
         linker.define_wasi()
         hooks.define(wasmtime, linker)
         with ticking() if timeout is not None else contextlib.nullcontext():

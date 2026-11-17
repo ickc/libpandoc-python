@@ -202,6 +202,30 @@ def test_the_directory_sandbox(tmp_path):
     assert pandoc.convert("x", to="html", sandbox=sandbox) == "<p>x</p>\n"
 
 
+@needs_wasm
+def test_cancelled_while_the_module_loads(tmp_path, monkeypatch):
+    """A token cancelled while libpandoc.wasm loads (as Ctrl-C during its
+    first compilation, 20 s) stops the call once it has loaded. Its epoch
+    came before the store's deadline, which nothing else would reach
+    without a time limit: the whole conversion ran (16 s here, of a
+    document that runs for minutes)."""
+    from libpandoc import _sandbox
+
+    monkeypatch.delenv("LIBPANDOC_WASM_TIMEOUT", raising=False)  # (no clock ticking)
+    t = CancelToken()
+    load = _sandbox._module
+
+    def cancelled_while_loading():
+        t.cancel()
+        return load()
+
+    monkeypatch.setattr(_sandbox, "_module", cancelled_while_loading)
+    e, took = timed(pandoc.convert, ">" * 10_000, to="html", sandbox={"read": [str(tmp_path)]},
+                    cancel=t)
+    assert isinstance(e, PandocCancelledError), e
+    assert took < 3, took
+
+
 SLOW_SCRIPT = """\
 import sys, time
 import libpandoc

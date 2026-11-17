@@ -72,7 +72,11 @@ pandoc.write(f(doc), "plain")
   filters pandoc calls back then run on that thread, in a copy of the
   caller's `contextvars` context (about 8 µs a call, 2.5% of a tiny
   conversion; a new thread for each call cost 70 µs). Measured: 35 to 60
-  ms from the signal to the process's end, natively and in the sandbox. `pandocpy` dies on Ctrl-C at once, as
+  ms from the signal to the process's end, natively and in the sandbox.
+  Loading libpandoc.wasm can't be interrupted: Ctrl-C (or a cancel) while
+  the sandbox loads it stops the call once it has loaded, up to 0.25 s
+  later from wasmtime's cache, up to its first compilation's 20 s
+  otherwise. `pandocpy` dies on Ctrl-C at once, as
   pandoc does.
 - **Threads:** the GIL is released while pandoc runs, so conversions in
   different threads run in parallel. A Python filter runs on the thread
