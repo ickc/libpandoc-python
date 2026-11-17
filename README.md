@@ -114,7 +114,9 @@ pandoc.write(f(doc), "plain")
   `convert`, the options themselves. A filter may call pandoc itself
   (`convert`, or `read(text, ctx.conversion)` to parse a fragment the way
   the document was read, in pandoc's sandbox when the conversion is
-  sandboxed: "Reading fragments, from filters"). Filter scripts and wasm filters get
+  sandboxed: "Reading fragments, from filters"). Many small reads should
+  go through one `read_many`: 10,011 small markdown texts take 0.20 s
+  batched against 3.50 s with a call each (0.35 ms a call). Filter scripts and wasm filters get
   `PANDOC_WRITER_OPTIONS` in their environment, as libpandoc's JSON
   filters do.
 
@@ -315,6 +317,12 @@ panflute's `convert_text` and pypandoc, first replace them by spaces
 (`preserve_tabs=False` does). A call each costs about 0.3 ms, six times
 `pandoc.read`'s: batch them. amsthm's 738 notes take 0.25 s read one by
 one and 0.015 s in one `read_many`.
+
+A text `read_many` can't read fails as `reading input N: ...`, N counting
+from 0: the text's place in the list given, not in the document. With
+`return_exceptions=True` each error is in its text's place in the result,
+so that a filter can map a failure back to where the text came from (a
+table's cell) and say so.
 
 **Confined when the conversion is.** Document text read this way may name
 files (LaTeX's `\input`, RST's and Org's includes). When the conversion
