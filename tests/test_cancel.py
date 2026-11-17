@@ -181,9 +181,13 @@ def test_the_directory_sandbox(tmp_path):
     loop = tmp_path / "forever.lua"
     loop.write_text("function Pandoc(doc) while true do end end\n")
     sandbox = {"read": [str(tmp_path)], "timeout": LIMIT}
+    # (the filter as the module names it: on Windows C:\\x is /c/x)
+    inside = loop.as_posix()
+    if sys.platform == "win32":
+        inside = f"/{inside[0].lower()}{inside[2:]}"
     pandoc.convert("x", to="html", sandbox=sandbox)  # (the module compiled)
     for call in (lambda t: pandoc.convert(SLOW, to="html", sandbox=sandbox, cancel=t),
-                 lambda t: pandoc.convert("x", to="html", filters=[str(loop)], sandbox=sandbox,
+                 lambda t: pandoc.convert("x", to="html", filters=[inside], sandbox=sandbox,
                                           cancel=t)):
         t = CancelToken()
         timer = cancel_after(t, 1)
