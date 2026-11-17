@@ -36,6 +36,7 @@ import re
 import sys
 import threading
 import time
+import weakref
 from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
@@ -344,15 +345,18 @@ class WasmFilter:
         wasi.argv = [os.fsencode(self.name).decode("utf-8", "replace"), ctx.get("format") or ""]
         wasi.env = list(filter_env(ctx, self._pandoc_version).items())
         _stdin_bytes(wasi, doc)
-        out: list[bytes] = []
-        wasi.stdout_custom, out_over = _capped(max_memory, out.append)
-        decoder = codecs.getincrementaldecoder("utf-8")("replace")
-        wasi.stderr_custom, err_over = _capped(max_memory, lambda b: _to_stderr(decoder, b))
         for host, guest, writable in preopens:
             try:
                 wasi.preopen_dir(host, guest, writable)
             except (wasmtime.WasmtimeError, UnicodeEncodeError):  # (wasmtime: UTF-8 paths)
                 raise RuntimeError(f"{self.name}: can't give it {host!r}") from None
+        out: list[bytes] = []
+        out_sink, out_over = _capped(max_memory, out.append)
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        err_sink, err_over = _capped(max_memory, lambda b: _to_stderr(decoder, b))
+        wasi.stdout_custom, wasi.stderr_custom = out_sink, err_sink
+        sinks = [weakref.ref(out_sink), weakref.ref(err_sink)]
+        del out_sink, err_sink  # (wasmtime's alone, until it frees them)
 
         store = wasmtime.Store(engine())
         store.set_wasi(wasi)
@@ -372,9 +376,12 @@ class WasmFilter:
                 msg += f" (its memory limit: {max_memory} bytes, {MAX_MEMORY_VAR})"
             return WasmFilterError(msg)
 
-        # The store is freed when the run ends: kept by the traceback of
-        # its error (a cycle, through this frame) until the interpreter
-        # exits, its WASI streams' callbacks into Python aborted 3.11 then.
+        # The store is freed when the run ends, not when the traceback of
+        # its error (a cycle, through this frame) goes. And the run ends once
+        # wasmtime has freed the streams' callbacks: it frees them on a
+        # thread of its own (tokio's) after the store is closed, calling
+        # Python, which crashed the process when that came after the
+        # interpreter's exit (SIGSEGV; Python 3.11 aborted during it).
         try:
             error = None
             try:
@@ -405,6 +412,16 @@ class WasmFilter:
         finally:
             store.close()
             linker.close()
+            _freed(sinks)
+
+
+def _freed(refs: Sequence[weakref.ref[Any]], seconds: float = 5.0) -> None:
+    """Wait until the objects are freed, ``seconds`` at most (polled:
+    free-threaded Python frees an object another thread let go of when its
+    own thread next runs Python)."""
+    deadline = time.monotonic() + seconds
+    while any(r() is not None for r in refs) and time.monotonic() < deadline:
+        time.sleep(0.0001)
 
 
 def _stdin_bytes(wasi: Any, data: bytes) -> None:
