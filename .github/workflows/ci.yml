@@ -168,7 +168,7 @@ jobs:
       - name: The wheels carry libpandoc's licence and notices
         run: |
           for w in wheelhouse/*.whl; do
-            "$PY311" -c 'import sys, zipfile; n = zipfile.ZipFile(sys.argv[1]).namelist(); missing = [f for f in sys.argv[2:] if not any(x.endswith(".dist-info/licenses/" + f) for x in n)]; sys.exit(missing and f"{sys.argv[1]}: no {missing}")' \
+            "$PY311" -c 'import sys, zipfile; n = zipfile.ZipFile(sys.argv[1]).namelist(); missing = [f for f in sys.argv[2:] if not any(x.endswith(".dist-info/licenses/" + f) for x in n)]; sys.exit(f"{sys.argv[1]}: no {missing}" if missing else 0)' \
               "$w" COPYING.md libpandoc-licenses/COPYING.md libpandoc-licenses/THIRD-PARTY-NOTICES
           done
 
