@@ -4,9 +4,24 @@ A wasm filter is a pandoc JSON filter built for WASI (``wasm32-wasip1``),
 such as a panir Rust filter: the document on stdin, the new one on stdout,
 the output format as its first argument, the variables libpandoc gives
 JSON filters in its environment (``PANDOC_WRITER_OPTIONS`` among them). It
-runs sandboxed: it sees only the directories it is given (the current one,
-read-only, by default), no network, no programs. It may
-call pandoc through the imports of module ``libpandoc`` (libpandoc-rs's
+runs sandboxed: no network, no programs, and only the directories it is
+given: by default none, as a wasm filter is for code you don't trust.
+``$LIBPANDOC_WASM_DIRS`` gives every filter some, read-only: directories as
+``PATH`` lists them (``os.pathsep``; unset or empty: none), read when the
+filter runs, as its limits are. A program gives one filter its own instead
+(``WasmFilter``'s ``dirs`` and ``preopens``), whatever the variable says.
+
+The filter sees each such directory under its absolute path (``C:\\x`` as
+``/c/x`` on Windows), its real one too if a link leads to it, and its path
+relative to the working directory (``.``, ``..``, ``../common``, ``img``;
+none on another drive), and the working directory as ``.`` when it lies
+inside one: so ``../common/part.txt``, ``here.txt`` and absolute names work
+as for a native filter. wasi-libc matches the beginning of a path against
+those names as written, without normalising it: ``./../common/x`` and
+``img/../../common/x`` don't work, nor ``./img/x`` when only ``img`` is
+given, nor a symbolic link leaving a directory given.
+
+It may call pandoc through the imports of module ``libpandoc`` (libpandoc-rs's
 ``guest.rs``), which this host answers on this process's pandoc, marked
 ``"untrusted": true``: libpandoc then runs them in pandoc's sandbox, with no
 options that read or write files, fetch or run anything (its list, which
@@ -33,6 +48,7 @@ import json
 import math
 import os
 import re
+import stat
 import sys
 import threading
 import time
@@ -44,6 +60,7 @@ from ._scripts import filter_env
 
 TIMEOUT_VAR = "LIBPANDOC_WASM_TIMEOUT"
 MAX_MEMORY_VAR = "LIBPANDOC_WASM_MAX_MEMORY"
+DIRS_VAR = "LIBPANDOC_WASM_DIRS"
 
 # How often the engine's epoch advances, while a filter with a timeout runs (seconds).
 _TICK = 0.01
@@ -102,6 +119,47 @@ def limits(timeout: Any = None, max_memory: Any = None) -> tuple[float | None, i
             else checked_timeout(timeout),
             parse_memory(os.environ.get(MAX_MEMORY_VAR, "")) if max_memory is None
             else checked_memory(max_memory))
+
+
+def env_dirs() -> list[str]:
+    """The directories ``$LIBPANDOC_WASM_DIRS`` gives (empty entries skipped)."""
+    return [d for d in os.environ.get(DIRS_VAR, "").split(os.pathsep) if d]
+
+
+Preopen = tuple[str, str, bool]  # (the host's path, the filter's, whether writable)
+
+
+def seen(d: str) -> list[Preopen]:
+    """The names a filter sees the host's directory ``d`` by, read-only: its
+    absolute path (as the directory sandbox names it), and its real one if
+    a link leads to it; its path relative to the working directory, from
+    their real paths; and the working directory as ``.`` if it lies inside.
+    A ValueError, naming it, if it doesn't exist or isn't a directory."""
+    from . import PandocError
+    from ._sandbox import _guest
+
+    try:
+        is_dir = stat.S_ISDIR(os.stat(d).st_mode)
+        real, cwd = os.path.realpath(d, strict=True), os.path.realpath(os.getcwd(), strict=True)
+    except (FileNotFoundError, NotADirectoryError):
+        raise ValueError(f"{d} does not exist") from None
+    except OSError as e:
+        raise ValueError(f"{d}: {e.strerror}") from None
+    if not is_dir:
+        raise ValueError(f"{d} is not a directory")
+    preopens: list[Preopen] = []
+    for p in (os.path.abspath(d), real):
+        with contextlib.suppress(PandocError):  # (a name WASI can't have: a UNC path, not UTF-8)
+            preopens.append((real, _guest(p), False))
+    # (none on another drive, or not UTF-8: a UnicodeEncodeError is a ValueError)
+    with contextlib.suppress(ValueError):
+        rel = os.path.relpath(real, cwd).replace(os.sep, "/")
+        rel.encode("utf-8")
+        preopens.append((real, rel, False))
+    with contextlib.suppress(ValueError):  # (another drive)
+        if real != cwd and os.path.commonpath([real, cwd]) == real:
+            preopens.append((cwd, ".", False))
+    return preopens
 
 
 def limit(store: Any, timeout: float | None, max_memory: int | None) -> None:
@@ -274,10 +332,17 @@ class WasmFilter:
     """A wasm filter: a pandoc JSON filter built for WASI (``wasm32-wasip1``),
     run in this process by wasmtime, sandboxed.
 
-    It sees the directories ``dirs`` (host, guest pairs; by default the
-    current one), read-only unless ``writable``, no network, and pandoc's
-    filter variables. It may call pandoc: in pandoc's sandbox, with options
-    that name no files.
+    It sees no network, pandoc's filter variables, and only the directories
+    it is given: by default those of ``$LIBPANDOC_WASM_DIRS`` when it runs
+    (none if unset or empty), read-only. A program gives it its own instead,
+    whatever the variable says: ``dirs``, directories of this machine seen
+    as the variable's are (the module's documentation: under their absolute
+    paths and their paths relative to the working directory), read-only,
+    looked at when it runs (one that doesn't exist, or isn't a directory,
+    fails it then); and ``preopens``, ``(host, guest, writable)``, a
+    directory seen as ``guest`` exactly, writable if so. ``dirs=[]``: none.
+    It may call pandoc: in pandoc's sandbox, with options that name no
+    files. A filter that fails while it was given no directory says so.
 
     It fails when it runs longer than ``timeout`` seconds (its calls to
     pandoc included: each runs with the time the filter has left as its
@@ -297,21 +362,31 @@ class WasmFilter:
         self,
         path: str | os.PathLike[str],
         *,
-        dirs: Sequence[tuple[str, str]] = ((".", "."),),
-        writable: bool = False,
+        dirs: Sequence[str | os.PathLike[str]] | None = None,
+        preopens: Sequence[tuple[str | os.PathLike[str], str, bool]] | None = None,
         timeout: float | None = None,
         max_memory: int | None = None,
     ) -> None:
         from . import pandoc_version
 
+        # (before compiling it, which may take seconds)
+        if isinstance(dirs, (str, bytes, os.PathLike)) or isinstance(preopens, (str, bytes)):
+            raise TypeError("dirs and preopens are lists: dirs=[d]")
+        if any(not isinstance(d, (str, bytes, os.PathLike)) for d in dirs or ()):
+            raise TypeError("dirs lists directories (paths); for a directory under a name of "
+                            "your own, preopens=[(host, guest, writable)]")
+        if any(not (isinstance(p, tuple) and len(p) == 3) for p in preopens or ()):
+            raise TypeError("preopens lists (host, guest, writable)")
         wasmtime = _wasmtime()
         self.name = os.fsdecode(path)
         try:
             self._module = wasmtime.Module.from_file(engine(), self.name)
         except wasmtime.WasmtimeError as e:
             raise ValueError(f"{self.name}: not a wasm filter: {e}") from None
-        self.dirs = [(os.fsdecode(h), g) for h, g in dirs]
-        self.writable = writable
+        # None: the variable's, when it runs
+        self.dirs = None if dirs is None else [os.fsdecode(d) for d in dirs]
+        self.preopens = None if preopens is None else [
+            (os.fsdecode(h), g, bool(w)) for h, g, w in preopens]
         checked_timeout(timeout)
         checked_memory(max_memory)
         self.timeout = timeout
@@ -326,20 +401,41 @@ class WasmFilter:
         libpandoc gives a callback: as a libpandoc callback."""
         return self.run(doc, json.loads(context))
 
-    def run(self, doc: bytes, ctx: dict[str, Any],
-            preopens: Sequence[tuple[str, str, bool]] | None = None) -> bytes:
+    def run(self, doc: bytes, ctx: dict[str, Any]) -> bytes:
         """Run the filter on a document (pandoc's JSON) in a conversion
-        (``ctx``: libpandoc's context); ``preopens`` (host, guest, writable)
-        instead of its own directories (a sandboxed conversion's)."""
+        (``ctx``: libpandoc's context), in a directory sandbox too seeing
+        its own directories, not the sandbox's."""
         wasmtime = _wasmtime()
         timeout, max_memory = limits(self.timeout, self.max_memory)
-        if preopens is None:
-            preopens = [(host, guest, self.writable) for host, guest in self.dirs]
+        preopens = self._preopens()
         with ticking() if timeout is not None else contextlib.nullcontext():
             return self._run(wasmtime, doc, ctx, timeout, max_memory, preopens)
 
+    @property
+    def _named(self) -> bool:
+        """Whether the program said which directories (else the variable's)."""
+        return self.dirs is not None or self.preopens is not None
+
+    def _preopens(self) -> list[Preopen]:
+        """What the filter sees: the program's names as given, the host's
+        directories by theirs (the first of a name kept)."""
+        exact = self.preopens or []
+        dirs = env_dirs() if not self._named else self.dirs or []
+        preopens: list[Preopen] = []
+        for p in [*exact, *(n for d in dirs for n in self._seen(d))]:
+            if all(g != p[1] for _, g, _ in preopens):
+                preopens.append(p)
+        return preopens
+
+    def _seen(self, d: str) -> list[Preopen]:
+        try:
+            return seen(d)
+        except ValueError as e:
+            raise WasmFilterError(
+                f"{self.name}: {e}" if self._named else f"{self.name}: {DIRS_VAR}: {e}") from None
+
     def _run(self, wasmtime: Any, doc: bytes, ctx: dict[str, Any], timeout: float | None,
-             max_memory: int | None, preopens: Sequence[tuple[str, str, bool]]) -> bytes:
+             max_memory: int | None, preopens: Sequence[Preopen]) -> bytes:
         wasi = wasmtime.WasiConfig()
         # (WASI's text: a file name that isn't UTF-8 with U+FFFD)
         wasi.argv = [os.fsencode(self.name).decode("utf-8", "replace"), ctx.get("format") or ""]
@@ -349,7 +445,7 @@ class WasmFilter:
             try:
                 wasi.preopen_dir(host, guest, writable)
             except (wasmtime.WasmtimeError, UnicodeEncodeError):  # (wasmtime: UTF-8 paths)
-                raise RuntimeError(f"{self.name}: can't give it {host!r}") from None
+                raise WasmFilterError(f"{self.name}: can't give it {host!r}") from None
         out: list[bytes] = []
         out_sink, out_over = _capped(max_memory, out.append)
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
@@ -368,10 +464,17 @@ class WasmFilter:
         _define_libpandoc(wasmtime, linker, clock)
 
         def failed(msg: str, interrupted: bool = False) -> WasmFilterError:
+            """What a failure means: the time limit it was stopped by; else
+            that it was given no directory, if so (which may be why it
+            failed), and its memory limit, if it has one (it may have
+            reached it)."""
             if interrupted:
                 return WasmFilterError(
                     f"{self.name}: stopped after {time.monotonic() - started:.1f} s, "
                     f"its time limit ({TIMEOUT_VAR}: {timeout})")
+            if not preopens:
+                msg += " (it was given no directory)" if self._named else \
+                    f" (it was given no directory: {DIRS_VAR})"
             if max_memory is not None:
                 msg += f" (its memory limit: {max_memory} bytes, {MAX_MEMORY_VAR})"
             return WasmFilterError(msg)

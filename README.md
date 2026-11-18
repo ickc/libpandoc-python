@@ -135,12 +135,36 @@ can do anything you can (pandoc's `--sandbox` limits readers and writers,
 not filters); a wasm filter by itself can't (through the document it
 returns it can: below the list):
 
-- **files:** it sees the current directory, read-only (`dirs=`,
-  `writable=` for others); on `pandocpy`'s command line nothing names
-  more, so an include through `..`, or through a link leaving the
-  directory, is a missing file (in the directory sandbox it sees the
-  mounts instead). No network, no programs. In WASI an empty name is the
-  working directory: `open("")` opens a directory, not a missing file;
+- **files:** **no directory**, as a wasm filter is for code you don't
+  trust, unless `LIBPANDOC_WASM_DIRS` gives some: directories as `PATH`
+  lists them (`:`, `;` on Windows; unset or empty: none), read-only, the
+  same for every wasm filter, in the directory sandbox too, read when the
+  filter runs (as its limits are). One that doesn't exist or isn't a
+  directory fails the filter before it runs, with a `WasmFilterError`
+  (`LIBPANDOC_WASM_DIRS: X does not exist`, `... is not a directory`). A
+  filter that fails while it was given none says so: `(it was given no
+  directory: LIBPANDOC_WASM_DIRS)`. A program gives one filter its own
+  instead, whatever the variable says: `WasmFilter(path, dirs=[...])`,
+  directories seen as the variable's are (`dirs=[]`: none, the hint then
+  `(it was given no directory)`), and `preopens=[(host, guest,
+  writable)]`, a directory seen as `guest` exactly, writable if so.
+
+  ```sh
+  LIBPANDOC_WASM_DIRS=.:../common pandocpy -F include.wasm input.md
+  ```
+
+  The filter sees each directory under its absolute path (`C:\x` as `/c/x`
+  on Windows; its real path too, if a link leads to it) and under its
+  path relative to the working directory (`.`, `..`, `../common`, `img`;
+  none on another drive), and the working directory as `.` when it lies
+  inside one: so `here.txt`, `../common/part.txt` and absolute names work
+  as for a native filter. wasi-libc matches the beginning of a path
+  against those names as written, without normalising it, so these don't
+  work: `./../common/x` and `img/../../common/x` ("Operation not
+  permitted"), `./img/x` when only `img` is given, and a symbolic link
+  leaving a directory given. No network, no programs. In WASI an empty
+  name is the working directory: `open("")` opens a directory, not a
+  missing file;
 - **environment:** only the variables pandoc gives filters
   (`PANDOC_VERSION`, `PANDOC_READER_OPTIONS`, ...), none of this process's;
 - **calls to pandoc** (libpandoc-rs's `libpandoc` crate, built for wasm):
@@ -225,7 +249,10 @@ process, and a filter run outside would read whatever the document names.
 Python filters (functions, `panir.Filter`s) and Python filter scripts
 (`-F foo.py`) are your code, as trusted as the command line: they run in
 this process as they do without the sandbox, called back by the module,
-unconfined. Wasm filters run in this process too, seeing the same mounts.
+unconfined. Wasm filters run in this process too, seeing their own
+directories (none, unless `LIBPANDOC_WASM_DIRS` or the program gives
+some), not the mounts: the document's list and the filters' are different
+lists.
 `pandocpy lua` and `pandoc server` are not in the module (status 4). A
 filter that reads fragments with `read(text, ctx.conversion)` or
 `read_many` reads them in pandoc's own sandbox: no files, not even in the

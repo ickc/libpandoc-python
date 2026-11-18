@@ -796,21 +796,38 @@ def test_a_json_filter_is_refused(lab):
 
 
 @needs_filters
-def test_a_wasm_filter_sees_the_mounts(lab):
-    include = Path(FILTERS) / "include.wasm"
+def test_a_wasm_filter_sees_its_own_directories(lab, monkeypatch):
+    """A wasm filter sees its own directories, not the sandbox's mounts: the
+    document's list and the filter's are different lists."""
+    from libpandoc._wasmfilter import WasmFilterError
 
-    def run(file: str) -> str:
-        return pandoc.convert(f"```{{.include}}\n{file}\n```\n", to="plain",
-                              filters=[pandoc.WasmFilter(include)],
+    include = Path(FILTERS) / "include.wasm"
+    monkeypatch.delenv("LIBPANDOC_WASM_DIRS", raising=False)
+
+    def run(f: pandoc.WasmFilter, file: str) -> str:
+        return pandoc.convert(f"```{{.include}}\n{file}\n```\n", to="plain", filters=[f],
                               sandbox={"read": [str(lab.work)], "write": [str(lab.out)]})
 
-    assert "INSIDE-OK" in run("inside.txt")
+    # none: not the mounts (the working directory, `work`, is mounted)
+    for f, says in ((pandoc.WasmFilter(include), "(it was given no directory: LIBPANDOC_WASM_DIRS)"),
+                    (pandoc.WasmFilter(include, dirs=[]), "(it was given no directory)")):
+        with pytest.raises(WasmFilterError) as e:
+            run(f, "inside.txt")
+        assert str(e.value).endswith(f"exited with status 3 {says}"), e.value
+    # its own: `work` (here `.`, the working directory), not `out`
+    own = pandoc.WasmFilter(include, dirs=[lab.work])
+    assert "INSIDE-OK" in run(own, "inside.txt")
     (lab.out / "input.md").write_text((lab.outside / "input.md").read_text())
-    assert "INPUT-OK" in run(named(lab.out / "input.md"))
+    with pytest.raises(WasmFilterError):
+        run(own, named(lab.out / "input.md"))
+    assert "INPUT-OK" in run(pandoc.WasmFilter(include, dirs=[lab.out]), named(lab.out / "input.md"))
+    # the variable's
+    monkeypatch.setenv("LIBPANDOC_WASM_DIRS", ".")
+    assert "INSIDE-OK" in run(pandoc.WasmFilter(include), "inside.txt")
     for outside in ("../secret/secret.txt", named(lab.secret / "secret.txt"),
                     named(lab.outside / "input.md")):
-        with pytest.raises(Exception) as e:  # (the filter's own error)
-            run(outside)
+        with pytest.raises(WasmFilterError) as e:
+            run(own, outside)
         assert "CANARY" not in str(e.value)
 
 
@@ -864,7 +881,7 @@ def pandocpy(lab: Lab, args: list[str], input: str = "", env: dict | None = None
     of the lab's, a time limit of 60 s unless given); (status, out, err)."""
     e = {k: v for k, v in os.environ.items()
          if k not in ("LIBPANDOC_SANDBOX", "LIBPANDOC_SANDBOX_WRITE", "LIBPANDOC_WASM_MAX_MEMORY",
-                      "PANDOC_DATA_DIRS")}
+                      "LIBPANDOC_WASM_DIRS", "PANDOC_DATA_DIRS")}
     e.update(LIBPANDOC_WASM_TIMEOUT="60", XDG_DATA_HOME=str(lab.data), APPDATA=str(lab.data))
     e.update(env or {})
     r = subprocess.run([sys.executable, "-m", "libpandoc", *args], input=input.encode(),
@@ -1001,13 +1018,23 @@ def test_pandocpy_pandocs_own_messages_and_statuses(lab):
 
 @needs_filters
 def test_pandocpy_a_wasm_filter_on_the_command_line(lab):
+    """It runs in this process, seeing its own directories
+    (LIBPANDOC_WASM_DIRS's), not the mounts."""
     include, upper = (str(Path(FILTERS) / f) for f in ("include.wasm", "upper.wasm"))
-    status, out, err = pandocpy(lab, ["-t", "plain", "-F", include, "-F", upper],
-                                "```include\ninside.tex\n```\n", HERE)
+    args = ["-t", "plain", "-F", include, "-F", upper]
+    status, out, err = pandocpy(lab, args, "```include\ninside.tex\n```\n", HERE)
+    assert status == 83 and "(it was given no directory: LIBPANDOC_WASM_DIRS)" in err, (out, err)
+    env = {**HERE, "LIBPANDOC_WASM_DIRS": "."}
+    status, out, err = pandocpy(lab, args, "```include\ninside.tex\n```\n", env)
     assert (status, out.strip()) == (0, "INSIDE-OK"), err
-    status, out, err = pandocpy(lab, ["-t", "plain", "-F", include],
-                                "```include\n../secret/secret.tex\n```\n", HERE)
+    secret = "```include\n../secret/secret.tex\n```\n"
+    status, out, err = pandocpy(lab, ["-t", "plain", "-F", include], secret, env)
     assert status == 83 and "CANARY" not in out + err, (out, err)
+    # the filter's directories, not the mounts: `secret`, given to the
+    # filter alone, is read by it, though the sandbox lists only `.`
+    env = {**HERE, "LIBPANDOC_WASM_DIRS": "../secret"}
+    status, out, err = pandocpy(lab, ["-t", "plain", "-F", include], secret, env)
+    assert (status, out.strip()) == (0, "CANARY-TEX-OUTSIDE"), err
 
 
 def test_pandocpy_the_memory_limit_stops_a_loop(lab):

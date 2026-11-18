@@ -26,7 +26,8 @@ The options and arguments go to pandoc untouched. Lua filters run inside;
 filters that are programs (JSON filters) fail, as a PDF engine does; Python
 filters (functions, ``panir.Filter``s, filter scripts) and wasm filters run
 in this process, called back by the module on the calling thread, a wasm
-filter seeing the same directories. They are told that the conversion is
+filter seeing its own directories (none by default: ``_wasmfilter``), not
+these. They are told that the conversion is
 sandboxed (the context's ``"sandbox"``, ``PANDOC_SANDBOX``: true, where the
 module tells of pandoc's own sandbox only), so that what they read through
 pandoc is read in its sandbox. Limits: ``$LIBPANDOC_WASM_TIMEOUT`` and
@@ -66,7 +67,6 @@ from typing import Any, NamedTuple
 from ._wasmfilter import (
     MAX_MEMORY_VAR,
     TIMEOUT_VAR,
-    WasmFilter,
     Watch,
     engine,
     limit,
@@ -366,8 +366,8 @@ class _Hooks:
     with their index), on the calling thread, and the first exception one
     raised (raised from the call, as natively)."""
 
-    def __init__(self, callbacks: Sequence[Callable[[bytes, bytes], bytes]], m: Mounts) -> None:
-        self.callbacks, self.mounts = callbacks, m
+    def __init__(self, callbacks: Sequence[Callable[[bytes, bytes], bytes]]) -> None:
+        self.callbacks = callbacks
         self.error: BaseException | None = None
 
     def taken(self) -> BaseException | None:
@@ -377,18 +377,13 @@ class _Hooks:
         return error
 
     def run(self, index: int, doc: bytes, context: bytes) -> bytes:
-        f = self.callbacks[index]
         # Told that the conversion is sandboxed: the module tells only of
         # pandoc's own sandbox, and a filter here runs outside it, so that
-        # what it reads through pandoc is read in pandoc's sandbox.
+        # what it reads through pandoc is read in pandoc's sandbox. (A wasm
+        # filter sees its own directories, not the mounts: the document's
+        # list and the filters' are different lists.)
         ctx = {**json.loads(context), "sandbox": True}
-        if isinstance(f, WasmFilter):  # the same directories, and the working one as "."
-            m = self.mounts
-            preopens = [(host, g, w) for g, (host, w) in m.mounts.items()]
-            if m.cwd_mounted is not None:
-                preopens.append((".", ".", m.cwd_mounted))
-            return f.run(doc, ctx, preopens)
-        return f(doc, json.dumps(ctx).encode())
+        return self.callbacks[index](doc, json.dumps(ctx).encode())
 
     def define(self, wasmtime: Any, linker: Any) -> None:
         """``libpandoc.filter(index, doc, doc_len, context, context_len, out)``,
@@ -468,7 +463,7 @@ def _run(m: Mounts, call: tuple[Any, ...], input: bytes | None,
         except (wasmtime.WasmtimeError, UnicodeEncodeError):
             raise _refused(f"sandbox: {host}: wasmtime can't open it") from None
     store, linker = wasmtime.Store(engine()), wasmtime.Linker(engine())
-    hooks = _Hooks(callbacks, m)
+    hooks = _Hooks(callbacks)
     started = time.monotonic()
     watch = None
     try:

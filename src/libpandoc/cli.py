@@ -20,8 +20,9 @@ Consecutive installed Python filters share one pass over the document.
 Python filter scripts (``-F foo.py``) run in this process too, unless they or
 the user say otherwise (``# pandocpy: subprocess``, ``$PANDOCPY_SUBPROCESS``):
 see ``libpandoc._scripts``. So do wasm filters (``-F foo.wasm``, with
-``libpandoc[wasm]``), sandboxed: see ``libpandoc.WasmFilter``. Other filters
-run as with pandoc.
+``libpandoc[wasm]``), sandboxed, seeing no directory unless
+``$LIBPANDOC_WASM_DIRS`` gives some: see ``libpandoc.WasmFilter``. Other
+filters run as with pandoc.
 
 With ``$LIBPANDOC_SANDBOX`` or ``$LIBPANDOC_SANDBOX_WRITE`` set, it is the
 pandoc command of libpandoc.wasm, in the directory sandbox those list (see
