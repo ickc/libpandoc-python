@@ -101,18 +101,196 @@ def test_a_filters_calls_get_no_files_programs_or_lua(tmp_path):
     assert "SECRET" not in json.dumps(answers)
 
 
+def named(p: str | os.PathLike[str]) -> str:
+    """An absolute path as a wasm filter names it: with `/`; on Windows
+    `C:\\x` is `/c/x`."""
+    s = os.fspath(p).replace("\\", "/")
+    if sys.platform == "win32" and s[1:2] == ":":
+        s = f"/{s[0].lower()}{s[2:]}"
+    return s
+
+
+@pytest.fixture
+def tree(tmp_path, monkeypatch) -> Path:
+    """What a wasm filter sees: `work` (the working directory, with `img`),
+    `common` beside it, `secret` (a canary) and a file; on POSIX a link
+    leaving `work`, and `linked`, a link to `common`. LIBPANDOC_WASM_DIRS
+    unset."""
+    base = Path(os.path.realpath(tmp_path))  # (macOS's /var is /private/var)
+    for d in ("work/img", "common", "secret"):
+        (base / d).mkdir(parents=True)
+    for f, text in (("work/here.txt", "HERE-OK"), ("work/img/in.txt", "IMG-OK"),
+                    ("common/part.txt", "COMMON-OK"), ("secret/secret.txt", "CANARY-WASM-DIRS"),
+                    ("a-file.txt", "not a directory")):
+        (base / f).write_text(text)
+    if sys.platform != "win32":
+        (base / "work/link-out.txt").symlink_to("../secret/secret.txt")
+        (base / "linked").symlink_to("common")
+    monkeypatch.chdir(base / "work")
+    monkeypatch.delenv("LIBPANDOC_WASM_DIRS", raising=False)
+    return base
+
+
+def include(file: str, f=None) -> tuple[str | None, str | None]:
+    """(output, error) of `include` (or the filter ``f``) on ``file``."""
+    try:
+        return pandoc.convert(f"```include\n{file}\n```\n", to="plain",
+                              filters=[f or wasm("include")]).strip(), None
+    except WasmFilterError as e:
+        return None, str(e)
+
+
 @needs_filters
-def test_it_sees_the_current_directory_read_only(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "in.txt").write_text("included")
-    assert "included" in pandoc.convert("```include\nin.txt\n```", to="plain",
-                                        filters=[wasm("include")])
-    assert "exited with status 3" in failure(wasm("include"), "```include\n/etc/passwd\n```")
-    assert "exited with status 3" in failure(wasm("misbehave"), "```write\nout.txt\n```")
-    assert not (tmp_path / "out.txt").exists()
-    pandoc.convert("```write\nout.txt\n```", to="plain",
-                   filters=[WasmFilter(wasm("misbehave"), writable=True)])
-    assert (tmp_path / "out.txt").exists()
+def test_it_sees_only_what_it_is_given(tree, capfd):
+    common = tree / "common"
+    # a directory under a name of the program's: here as the filter's "."
+    f = WasmFilter(wasm("include"), preopens=[(common, ".", False)])
+    assert include("part.txt", f) == ("COMMON-OK", None)
+    # as the variable gives it: by its absolute path (and, through a link,
+    # its real one too)
+    f = WasmFilter(wasm("include"), dirs=[common])
+    assert include(named(common / "part.txt"), f) == ("COMMON-OK", None)
+    if sys.platform != "win32":
+        f = WasmFilter(wasm("include"), dirs=[tree / "linked"])
+        for part in (tree / "linked/part.txt", common / "part.txt"):
+            assert include(named(part), f) == ("COMMON-OK", None), part
+    # what is outside is missing
+    out, err = include(named(tree / "secret/secret.txt"), WasmFilter(wasm("include"), dirs=[common]))
+    assert out is None and err.endswith("exited with status 3"), err
+    # no directory: the filter's failure says it had none
+    out, err = include("here.txt", WasmFilter(wasm("include"), dirs=[]))
+    assert err.endswith("exited with status 3 (it was given no directory)"), err
+    # a directory that doesn't exist, or isn't one: it fails before it runs
+    for d, says in ((tree / "nope", "does not exist"), (tree / "a-file.txt", "is not a directory")):
+        out, err = include("here.txt", WasmFilter(wasm("include"), dirs=[d]))
+        assert err is not None and err.endswith(f"include.wasm: {d} {says}"), err
+    assert "CANARY" not in capfd.readouterr().err
+
+
+@needs_filters
+def test_none_by_default(tree):
+    """No directory unless LIBPANDOC_WASM_DIRS gives some (empty: none);
+    the failure says so."""
+    for value in (None, "", os.pathsep):
+        with pytest.MonkeyPatch.context() as m:
+            if value is not None:
+                m.setenv("LIBPANDOC_WASM_DIRS", value)
+            _, err = include("here.txt")
+            assert err is not None and err.endswith(
+                "exited with status 3 (it was given no directory: LIBPANDOC_WASM_DIRS)"), err
+
+
+@needs_filters
+def test_the_variables_directories(tree, monkeypatch, capfd):
+    """Each directory LIBPANDOC_WASM_DIRS gives, under its absolute path and
+    its path relative to the working directory (and the working directory
+    as `.` inside one); paths are not normalised."""
+
+    def run(dirs: list[str], file: str) -> tuple[str | None, str | None]:
+        monkeypatch.setenv("LIBPANDOC_WASM_DIRS", os.pathsep.join(dirs))
+        return include(file)
+
+    work, common = named(tree / "work"), named(tree / "common")
+    reads = [
+        # the working directory, as `.`, and by its absolute path
+        (["."], "here.txt", "HERE-OK"),
+        (["."], "img/in.txt", "IMG-OK"),
+        (["."], f"{work}/here.txt", "HERE-OK"),
+        ([str(tree / "work")], "here.txt", "HERE-OK"),
+        # its parent, as `..`, and the working directory as `.` inside it
+        ([".."], "../common/part.txt", "COMMON-OK"),
+        ([".."], "here.txt", "HERE-OK"),
+        ([".."], f"{common}/part.txt", "COMMON-OK"),
+        # a sibling, and a list
+        (["../common"], "../common/part.txt", "COMMON-OK"),
+        ([".", "../common"], "here.txt", "HERE-OK"),
+        ([".", "../common"], "../common/part.txt", "COMMON-OK"),
+        # a subdirectory
+        (["img"], "img/in.txt", "IMG-OK"),
+    ]
+    for dirs, file, text in reads:
+        assert run(dirs, file) == (text, None), (dirs, file)
+    fails = [
+        (["."], "../common/part.txt"),
+        (["../common"], "here.txt"),
+        # only below a subdirectory, and not normalised
+        (["img"], "here.txt"),
+        (["img"], "./img/in.txt"),
+        ([".", "../common"], "./../common/part.txt"),
+        ([".", "../common"], "img/../../common/part.txt"),
+        # outside what was given
+        ([".", "../common"], named(tree / "secret/secret.txt")),
+        ([".", "../common"], "../secret/secret.txt"),
+    ]
+    if sys.platform != "win32":
+        fails.append((["."], "link-out.txt"))
+    for dirs, file in fails:
+        capfd.readouterr()
+        out, err = run(dirs, file)
+        assert out is None and err.endswith("exited with status 3"), (dirs, file, err)
+        said = capfd.readouterr().err  # (the filter's standard error)
+        assert "CANARY" not in said, said
+        if file in ("./../common/part.txt", "img/../../common/part.txt"):
+            assert "Operation not permitted" in said, said
+    # a directory that doesn't exist, a file: the filter fails, naming it
+    _, err = run([".", "nope"], "here.txt")
+    assert err is not None and err.endswith("include.wasm: LIBPANDOC_WASM_DIRS: nope does not exist")
+    file = os.path.join("..", "a-file.txt")
+    _, err = run([file], "here.txt")
+    assert err is not None and err.endswith(f"LIBPANDOC_WASM_DIRS: {file} is not a directory"), err
+    # a program's own choice replaces the variable: none, or its own
+    monkeypatch.setenv("LIBPANDOC_WASM_DIRS", ".")
+    _, err = include("here.txt", WasmFilter(wasm("include"), dirs=[]))
+    assert err is not None and err.endswith("exited with status 3 (it was given no directory)"), err
+    _, err = include("here.txt", WasmFilter(wasm("include"), dirs=["../common"]))
+    assert err is not None and err.endswith("exited with status 3"), err
+    _, err = include("here.txt", WasmFilter(wasm("include"), preopens=[("../common", "/c", False)]))
+    assert err is not None and err.endswith("exited with status 3"), err
+    assert include("here.txt") == ("HERE-OK", None)
+    assert "CANARY" not in capfd.readouterr().err
+
+
+@needs_filters
+def test_read_only_unless_given_writable(tree, monkeypatch):
+    write = "```write\nout.txt\n```"
+    monkeypatch.setenv("LIBPANDOC_WASM_DIRS", ".")
+    assert failure(wasm("misbehave"), write).endswith("exited with status 3")
+    assert failure(WasmFilter(wasm("misbehave"), dirs=["."]), write).endswith("exited with status 3")
+    assert not (tree / "work/out.txt").exists()
+    assert failure(WasmFilter(wasm("misbehave"), preopens=[(".", ".", True)]), write) is None
+    assert (tree / "work/out.txt").exists()
+
+
+def test_dirs_are_paths():
+    """``dirs`` lists directories; a name of one's own is ``preopens``'s."""
+    for dirs, says in (([(".", ".")], "preopens"), (".", "are lists")):
+        with pytest.raises(TypeError, match=says):
+            WasmFilter(wasm("upper") if WASM else "x.wasm", dirs=dirs)
+    with pytest.raises(TypeError, match="host, guest, writable"):
+        WasmFilter(wasm("upper") if WASM else "x.wasm", preopens=[(".", ".")])
+
+
+@needs_filters
+def test_pandocpy_gives_the_variables_directories(tree):
+    """pandocpy: none by default, the failure saying so (status 83); the
+    variable's; one that doesn't exist (in a child process: the variable
+    is the process's)."""
+
+    def pandocpy(dirs: str | None, file: str) -> subprocess.CompletedProcess:
+        env = {k: v for k, v in os.environ.items() if k != "LIBPANDOC_WASM_DIRS"}
+        if dirs is not None:
+            env["LIBPANDOC_WASM_DIRS"] = dirs
+        return subprocess.run([sys.executable, "-m", "libpandoc", "-t", "plain", "-F", wasm("include")],
+                              input=f"```include\n{file}\n```\n".encode(), capture_output=True,
+                              cwd=tree / "work", env=env, timeout=120, check=False)
+
+    r = pandocpy(None, "here.txt")
+    assert r.returncode == 83, r
+    assert b"exited with status 3 (it was given no directory: LIBPANDOC_WASM_DIRS)" in r.stderr, r
+    r = pandocpy(os.pathsep.join([".", "../common"]), "../common/part.txt")
+    assert (r.returncode, r.stdout.strip()) == (0, b"COMMON-OK"), r
+    r = pandocpy(os.pathsep.join([".", "nope"]), "here.txt")
+    assert r.returncode == 83 and b"LIBPANDOC_WASM_DIRS: nope does not exist" in r.stderr, r
 
 
 @needs_filters
