@@ -237,14 +237,17 @@ def test_a_call_has_a_time_limit():
     assert repr(pickle.loads(pickle.dumps(e.value))) == repr(e.value)
     with pytest.raises(TimeoutError):
         pandoc.read(SLOW, timeout=0.5)
-    # read_many: the texts not read in time, in their places
+    # read_many: the texts not read in time, in their places. (A longer
+    # limit: the call's setup must end within it, or the whole call fails,
+    # as documented; with 0.5 s it did once, on a macOS Intel CI runner,
+    # where the setup takes under a millisecond here.)
     started = time.monotonic()
-    a, slow, b = pandoc.read_many(["*a*", SLOW, "b"], timeout=0.5, return_exceptions=True)
-    assert time.monotonic() - started < 5
+    a, slow, b = pandoc.read_many(["*a*", SLOW, "b"], timeout=3, return_exceptions=True)
+    assert time.monotonic() - started < 10
     assert isinstance(slow, pandoc.PandocTimeoutError), slow
     assert a.blocks and b.blocks
     with pytest.raises(pandoc.PandocTimeoutError, match="reading input 1"):
-        pandoc.read_many(["a", SLOW], timeout=0.5)
+        pandoc.read_many(["a", SLOW], timeout=3)
     # and the next call works
     assert pandoc.convert("*hi*") == "<p><em>hi</em></p>\n"
 
@@ -255,13 +258,14 @@ def test_a_python_filter_runs_to_its_end_past_the_time_limit():
     ran = []
 
     def slow(doc):
-        time.sleep(1)
+        time.sleep(2)
         ran.append(True)
 
+    # (a limit the call reaches its filter within, on a slow CI runner too)
     started = time.monotonic()
     with pytest.raises(pandoc.PandocTimeoutError):
-        pandoc.convert("x", filters=[slow], timeout=0.2)
-    assert ran == [True] and time.monotonic() - started >= 1
+        pandoc.convert("x", filters=[slow], timeout=1)
+    assert ran == [True] and time.monotonic() - started >= 2
 
 
 def test_read_many_warns_as_convert_does():
