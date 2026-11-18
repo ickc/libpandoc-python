@@ -228,7 +228,9 @@ def test_the_variables_directories(tree, monkeypatch, capfd):
     fails = [
         (["."], "../common/part.txt"),
         (["../common"], "here.txt"),
-        # only below a subdirectory, and not normalised
+        # only below a subdirectory, and not normalised (a leading `./`:
+        # kept by this filter, built with lto = true; dropped by one built
+        # without, where the two names with it work)
         (["img"], "here.txt"),
         (["img"], "./img/in.txt"),
         ([".", "../common"], "./../common/part.txt"),
@@ -239,6 +241,9 @@ def test_the_variables_directories(tree, monkeypatch, capfd):
     ]
     if sys.platform != "win32":
         fails.append((["."], "link-out.txt"))
+        # (even with its target's directory given: the link leaves the
+        # directory its name is opened through, the working directory)
+        fails.append(([".", ".."], "link-out.txt"))
     for dirs, file in fails:
         capfd.readouterr()
         out, err = run(dirs, file)

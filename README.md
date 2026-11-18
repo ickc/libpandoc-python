@@ -162,11 +162,15 @@ returns it can: below the list):
   path relative to the working directory (`.`, `..`, `../common`, `img`;
   none on another drive), and the working directory as `.` when it lies
   inside one: so `here.txt`, `../common/part.txt` and absolute names work
-  as for a native filter. wasi-libc matches the beginning of a path
-  against those names as written, without normalising it, so these don't
-  work: `./../common/x` and `img/../../common/x` ("Operation not
-  permitted"), `./img/x` when only `img` is given, and a symbolic link
-  leaving a directory given. No network, no programs. In WASI an empty
+  as for a native filter. The filter's own libc (wasi-libc) matches the
+  beginning of a path against those names, without normalising it:
+  `img/../../common/x` doesn't work ("Operation not permitted"), and a
+  leading `./` is not to be relied on (`./../common/x`; `./img/x` when
+  only `img` is given): the same Rust filter drops it built without
+  link-time optimisation, and keeps it, so fails, built with `lto = true`.
+  A symbolic link is refused when it leaves the directory its name is
+  opened through, even into another one given. No network, no programs.
+  In WASI an empty
   name is the working directory: `open("")` opens a directory, not a
   missing file;
 - **environment:** only the variables pandoc gives filters
