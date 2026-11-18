@@ -132,7 +132,8 @@ included), and under pandoc itself through a wrapper.
 
 It runs sandboxed, whatever pandoc's options. Python, Lua and JSON filters
 can do anything you can (pandoc's `--sandbox` limits readers and writers,
-not filters); a wasm filter can't:
+not filters); a wasm filter by itself can't (through the document it
+returns it can: below the list):
 
 - **files:** it sees the current directory, read-only (`dirs=`,
   `writable=` for others); on `pandocpy`'s command line nothing names
@@ -159,6 +160,18 @@ not filters); a wasm filter can't:
   limit is the filter's own memory, not pandoc's, which its calls use, and
   also caps what it writes to its standard output and to its standard
   error (passed on to `sys.stderr`), each.
+
+**What these bounds don't cover: the document the filter returns.** pandoc
+writes it with your access, as it writes any document: a writer that
+embeds files (docx, ODT, EPUB, PPTX, HTML with `--embed-resources`) reads
+the images the document names, citeproc run after the filter reads the
+`bibliography` in its metadata, and a PDF engine reads what raw LaTeX
+names. A filter given no directory at all can name a file it couldn't
+open and find it in the output (tested in libpandoc-rs). So for a filter
+you don't trust, confine the conversion too, as for a document you don't
+trust: the directory sandbox below, where pandoc reads only what you
+listed (pandoc's own, `sandbox=True` or `--sandbox`, covers its writers
+and citeproc, not a PDF engine).
 
 ## Security: documents you don't trust
 
