@@ -215,7 +215,7 @@ seen in this package's tests or by hand):
   filter by its place in the `filters` given, counted from 0 (in
   `pandocpy`, in pandoc's list of filters, `-F`, `-L` and `--citeproc` in
   order): `filters[2]: this filter failed`, or `filters[2]: what it was
-  given is not a document` when what it was given could not be parsed.
+  given could not be read` when panir could not parse its input.
   When that went unchecked from a filter on bytes before it, the note
   says whose it was: `(its input is what filters[1] wrote, unchecked:
   LIBPANDOC_SEPARATE_FILTERS=1 has pandoc check it)`. A traceback shows the

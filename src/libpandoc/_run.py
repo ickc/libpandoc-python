@@ -134,7 +134,7 @@ class Run:
                 try:
                     doc = panir.loads(data)
                 except Exception as e:
-                    e.add_note(f"filters[{i}]: what it was given is not a document"
+                    e.add_note(f"filters[{i}]: what it was given could not be read"
                                + ("" if wrote is None else _HINT.format(wrote)))
                     raise
             return doc

@@ -285,7 +285,7 @@ def test_unchecked_bytes_give_the_hint(tmp_path):
     with pytest.raises(ValueError) as e:  # (panir's ASTDecodeError)
         libpandoc.convert("hi", to="plain", filters=[g, lambda d: ran.append(d)])
     assert e.value.__notes__ == [
-        "filters[1]: what it was given is not a document " + HINT.format(0)]
+        "filters[1]: what it was given could not be read " + HINT.format(0)]
     assert ran == []
     # a script reading them, failing on them
     s = script(tmp_path, "reads.py", PLAIN % "s")
@@ -297,7 +297,7 @@ def test_unchecked_bytes_give_the_hint(tmp_path):
     with pytest.raises(ValueError) as e:
         libpandoc.convert("hi", to="plain", filters=[g, p])
     assert e.value.__notes__ == [
-        "filters[1]: what it was given is not a document " + HINT.format(0)]
+        "filters[1]: what it was given could not be read " + HINT.format(0)]
 
 
 def test_with_the_switch_pandoc_refuses_them_after_the_first(tmp_path):
@@ -504,7 +504,7 @@ def test_the_directory_sandbox_runs_them_alike(tmp_path):
     with pytest.raises(ValueError) as e:
         libpandoc.convert("hi", to="plain", sandbox=box, filters=[g, seen])
     assert e.value.__notes__ == [
-        "filters[1]: what it was given is not a document " + HINT.format(0)]
+        "filters[1]: what it was given could not be read " + HINT.format(0)]
 
 
 @needs_sandbox
