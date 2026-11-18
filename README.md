@@ -223,6 +223,11 @@ instead): a Python filter's own citeproc
 (`convert(..., citeproc=True)`) reads the files itself, with this
 process's access.
 
+A filter that reads files reads what the document asks for, within its
+directories (an include filter; citeproc on the metadata's
+`bibliography`): when the document isn't trusted either, give the filter
+no more than the document's own list (`LIBPANDOC_SANDBOX`).
+
 ## Security: documents you don't trust
 
 pandoc reads what a document asks for: LaTeX's `\input`, RST, Org,
