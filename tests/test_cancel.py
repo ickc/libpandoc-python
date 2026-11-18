@@ -158,6 +158,10 @@ def test_a_python_filter_runs_to_its_end(sandbox):
     # ``cancel``). (Not cancelled after a fixed time: on a busy CI runner a
     # call had not reached its filter by then, and was cancelled before
     # it; seen in libpandoc-rs's twin.)
+    if sandbox is not None:
+        # the module loaded first: a new libpandoc.wasm's first compilation
+        # took over 60 s on CI runners, longer than the wait below
+        pandoc.convert("x", to="html", sandbox=sandbox)
     t = CancelToken()
     started, ran = threading.Event(), []
 
