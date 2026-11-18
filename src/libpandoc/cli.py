@@ -15,14 +15,16 @@ the conversion, instead of as a separate program:
 
     $ pandocpy -F pantable input.md -o output.html
 
-Consecutive installed Python filters share one pass over the document.
-
 Python filter scripts (``-F foo.py``) run in this process too, unless they or
 the user say otherwise (``# pandocpy: subprocess``, ``$PANDOCPY_SUBPROCESS``):
 see ``libpandoc._scripts``. So do wasm filters (``-F foo.wasm``, with
 ``libpandoc[wasm]``), sandboxed, seeing no directory unless
 ``$LIBPANDOC_WASM_DIRS`` gives some: see ``libpandoc.WasmFilter``. Other
 filters run as with pandoc.
+
+Consecutive filters of this process are one exchange with pandoc (one
+callback, ``libpandoc._run``); ``$LIBPANDOC_SEPARATE_FILTERS=1`` makes each
+its own, so that pandoc reads and checks the document between any two.
 
 With ``$LIBPANDOC_SANDBOX`` or ``$LIBPANDOC_SANDBOX_WRITE`` set, it is the
 pandoc command of libpandoc.wasm, in the directory sandbox those list (see
@@ -45,7 +47,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from importlib.metadata import PackageNotFoundError, distributions, version
 from typing import Any
 
-from . import PandocError, _callbacks, _core, _sandbox, query
+from . import PandocError, _callbacks, _core, _run, _sandbox, query
 from ._wasmfilter import WasmFilterError
 
 GROUP = "panir.filters"
@@ -71,17 +73,17 @@ def installed_filters() -> dict[str, Any]:
 
 def plan(
     filters: Sequence[Mapping[str, Any]], available: Mapping[str, Any],
-    args: Sequence[str] = (),
+    args: Sequence[str] = (), separate: bool = False,
 ) -> tuple[list[Any], tuple[Callable[..., Any], ...]]:
     """pandoc's filter list with installed Python filters (loaded), Python
     filter scripts and wasm filters as callbacks: each run of consecutive
-    installed ones is one callback (one pass of JSON), each script or wasm
-    filter one."""
+    ones one callback (one exchange with pandoc), or with ``separate`` each
+    its own."""
     listed: list[Any] = []
     for f in filters:
         ep = available.get(f["path"]) if f.get("type") == "json" else None
         listed.append(ep.load() if ep is not None else dict(f))
-    callbacks, entries = _callbacks(listed, None, args)
+    callbacks, entries = _callbacks(listed, None, args, separate=separate)
     return entries, callbacks
 
 
@@ -99,7 +101,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     filters_json, callbacks = None, ()
     if "filters" in parsed:
         try:
-            entries, cbs = plan(parsed["filters"], available, args)
+            separate = _run.separate(None) if parsed["filters"] else False
+        except ValueError as e:
+            print(f"{PROG}: {e}", file=sys.stderr)
+            return 1
+        try:
+            entries, cbs = plan(parsed["filters"], available, args, separate)
         except (OSError, ImportError, ValueError) as e:  # a wasm filter
             print(f"{PROG}: {e}", file=sys.stderr)
             return FILTER_FAILED
@@ -119,7 +126,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 status = _core.main(command, filters_json, callbacks)
     except WasmFilterError as e:
-        print(f"{PROG}: {e}", file=sys.stderr)
+        # (and its notes: which filter it was)
+        print(f"{PROG}: {e}", *getattr(e, "__notes__", ()), sep="\n", file=sys.stderr)
         return FILTER_FAILED
     except Exception:  # noqa: BLE001  a filter's exception, whatever it is
         traceback.print_exc()

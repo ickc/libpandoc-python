@@ -371,7 +371,7 @@ def test_the_path_is_restored_after_the_script_fails(tmp_path, monkeypatch):
                                     "util.py": "WORD = 'boom'\n"})
     path = list(sys.path)
     with pytest.raises(RuntimeError, match="boom"):
-        _scripts._in_process(str(d / "f.py"), b"{}", "html", {}, lambda fs: b"")
+        _scripts._in_process(str(d / "f.py"), lambda: b"{}", "html", {})
     assert sys.path == path and "util" not in sys.modules
 
 
@@ -392,7 +392,7 @@ def test_a_script_sees_what_python_script_py_gives_it(tmp_path, monkeypatch):
     (tmp_path / "link").symlink_to(real)
     monkeypatch.chdir(tmp_path)
     doc = b'{"pandoc-api-version":[1,23,1,2],"meta":{},"blocks":[]}'
-    out = _scripts._in_process("link/f.py", doc, "html", {}, lambda fs: b"")
+    out = _scripts._in_process("link/f.py", lambda: doc, "html", {})
     seen = json.loads(json.loads(out)["blocks"][-1]["c"][0]["c"])
     path = str(tmp_path / "link/f.py")
     assert seen == [path, path, os.path.realpath(real), "__main__", "None", str(tmp_path)]

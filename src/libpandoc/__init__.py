@@ -14,7 +14,8 @@ given as keyword arguments with ``_`` for ``-`` (``reference_doc=``,
 ``from_=`` for ``from``) or as a dict (None: not given), and libpandoc's own: ``timeout``
 (seconds; ``PandocTimeoutError``) and ``untrusted``, and this package's
 directory sandbox, ``sandbox={"read": [...], "write": [...]}`` (the
-README's "Security"; ``$LIBPANDOC_SANDBOX`` for ``run``). ``cancel=`` a
+README's "Security"; ``$LIBPANDOC_SANDBOX`` for ``run``) and
+``separate_filters`` (the README's "Consecutive filters"). ``cancel=`` a
 ``CancelToken`` stops a call from another thread (``PandocCancelledError``),
 and Ctrl-C stops a call on the main thread. Warnings pandoc
 reports are issued as ``PandocWarning``; failures raise ``PandocError``.
@@ -23,7 +24,6 @@ reports are issued as ``PandocWarning``; failures raise ``PandocError``.
 from __future__ import annotations
 
 import functools
-import inspect
 import json
 import logging
 import os
@@ -40,7 +40,7 @@ if sys.platform == "emscripten":  # Pyodide: libpandoc.wasm
     from . import _wasm as _core
 else:
     from . import _core
-from . import _cancel, _sandbox
+from . import _cancel, _run, _sandbox
 from ._cancel import CancelToken
 from ._wasmfilter import WasmFilter
 
@@ -351,8 +351,14 @@ def convert(
     ``filters`` may mix pandoc's (Lua or JSON filter paths) with Python ones:
     ``panir.Filter``s, or functions that take a ``Pandoc`` (and optionally
     a ``panir.Conversion``) and change it or return a new one. They run in
-    order, in this process, within one pandoc run, as ``--filter`` would. A
-    Python filter's exception is raised from ``convert`` as it is.
+    order, in this process, within one pandoc run, as ``--filter`` would.
+    Consecutive filters of this process (Python ones, Python scripts, wasm
+    filters) are one exchange with pandoc; ``separate_filters=True`` (this
+    package's option; by default ``$LIBPANDOC_SEPARATE_FILTERS``, ``1`` on)
+    makes each its own, so that pandoc reads and checks the document between
+    any two (the README's "Consecutive filters"). A filter's exception is
+    raised from ``convert`` as it is, with a note naming it, ``filters[N]``
+    (N from 0).
 
     ``cancel=`` a ``CancelToken`` stops the conversion when the token is
     cancelled (from another thread, or a filter), with a
@@ -386,19 +392,29 @@ def convert(
 def _convert(source: bytes | None, opts: Mapping[str, Any], cancel: CancelToken | None) -> bytes:
     """pandoc's output for these options, filters in Python included."""
     _cancellable(cancel)
+    opts = dict(opts)
+    given = opts.pop(_run.KEY, None)  # (this package's, not pandoc's)
     dirs = _sandbox.from_options(opts)
     filters = opts.get("filters") or ()
     if isinstance(filters, (str, bytes, os.PathLike)):
         raise TypeError(f"filters is a list, not one filter: filters=[{filters!r}]")
-    callbacks, entries = _callbacks(filters, opts)
+    # (the variable read only for a call with filters; a value given is checked)
+    separate = _run.separate(given) if filters or given is not None else False
+    runs, entries = _callbacks(filters, opts, separate=separate)
+
+    def told(t: CancelToken | None) -> tuple[_run.Run, ...]:
+        for r in runs:
+            r.token = t
+        return runs
+
     if dirs is not None:
-        module_opts = {**opts, "filters": entries} if callbacks else opts
+        module_opts = {**opts, "filters": entries} if runs else opts
         return _check(*_call(
-            lambda t: _sandbox.convert(module_opts, source, dirs, callbacks, _dumps, t), cancel))
-    if callbacks:
+            lambda t: _sandbox.convert(module_opts, source, dirs, told(t), _dumps, t), cancel))
+    if runs:
         pandoc_opts = {**opts, "filters": entries}
         return _check(*_call(lambda t: _core.convert_filters(
-            _dumps(_cancel.options(pandoc_opts, t)), source, callbacks), cancel))
+            _dumps(_cancel.options(pandoc_opts, t)), source, told(t)), cancel))
     return _check(*_call(lambda t: _core.convert(_dumps(_cancel.options(opts, t)), source), cancel))
 
 
@@ -412,54 +428,57 @@ def _is_python_filter(f: Any) -> bool:
 
 
 def _callbacks(
-    filters: Sequence[Any], opts: Mapping[str, Any] | None, args: Sequence[str] = ()
-) -> tuple[tuple[Any, ...], list[Any]]:
-    """Python filters as libpandoc callbacks, and the filters list referring
-    to them by index. Consecutive Python objects (Filters, functions) share
-    one callback (one JSON round trip). Python filter scripts (a JSON
-    filter's path, ``.py`` or a Python ``#!``) run in this process, each its
-    own callback, unless opted out (see ``libpandoc._scripts``). Wasm
-    filters (``WasmFilter``, or a JSON filter's path ending in ``.wasm``)
-    run in this process too, each its own callback; ``args``, the command
-    line if any, may name the user data directory where they are looked
-    for, as pandoc does."""
+    filters: Sequence[Any], opts: Mapping[str, Any] | None, args: Sequence[str] = (), *,
+    separate: bool = False,
+) -> tuple[tuple[_run.Run, ...], list[Any]]:
+    """The filters of this process as libpandoc callbacks, and the filters
+    list referring to them by index: each run of consecutive ones one
+    callback (``_run.Run``: one exchange with pandoc), or with ``separate``
+    each its own. Those of this process: Python objects (``Filter``s,
+    functions), Python filter scripts (a JSON filter's path, ``.py`` or a
+    Python ``#!``: in this process unless opted out, see
+    ``libpandoc._scripts``), and wasm filters (``WasmFilter``, or a JSON
+    filter's path ending in ``.wasm``); ``args``, the command line if any,
+    may name the user data directory where they are looked for, as pandoc
+    does."""
+    runs: list[_run.Run] = []
+    entries: list[Any] = []
+    open_ = False  # whether the last entry is a run that takes the next filter
+    for i, f in enumerate(filters):
+        m = _member(f, opts, args)
+        if m is None:
+            entries.append(f)
+            open_ = False
+            continue
+        if open_:
+            runs[-1].members.append((i, m))
+        else:
+            entries.append({"type": "callback", "index": len(runs)})
+            runs.append(_run.Run([(i, m)], opts))
+        open_ = not separate
+    return tuple(runs), entries
+
+
+def _member(f: Any, opts: Mapping[str, Any] | None, args: Sequence[str]) -> Any:
+    """A filter as a member of a run (``_run.Run``), or None for one of
+    pandoc's own."""
     from . import _scripts
 
-    callbacks: list[Any] = []
-    entries: list[Any] = []
-    group: list[Any] = []
-
-    def flush() -> None:
-        if group:
-            entries.append({"type": "callback", "index": len(callbacks)})
-            callbacks.append(_callback(tuple(group), opts))
-            group.clear()
-
-    for f in filters:
-        if _is_python_filter(f):
-            group.append(f)
-            continue
-        flush()
-        path = _json_filter_path(f)
-        if isinstance(f, WasmFilter):
-            entries.append({"type": "callback", "index": len(callbacks)})
-            callbacks.append(f)
-        elif path is not None and path.lower().endswith(".wasm"):
-            found = _find_filter(path, opts, args)
-            if found is None:
-                raise FileNotFoundError(f"wasm filter {path} not found")
-            entries.append({"type": "callback", "index": len(callbacks)})
-            callbacks.append(_wasm_filter(found))
-        elif path is not None and _scripts.is_python_script(path):
-            entries.append({"type": "callback", "index": len(callbacks)})
-            callbacks.append(_scripts.callback(
-                path, pandoc_version(), options=opts,
-                in_process=_scripts.opted_out(path) is None,
-            ))
-        else:
-            entries.append(f)
-    flush()
-    return tuple(callbacks), entries
+    if _is_python_filter(f):
+        return _run.Typed(f)
+    if isinstance(f, WasmFilter):
+        return f
+    path = _json_filter_path(f)
+    if path is not None and path.lower().endswith(".wasm"):
+        found = _find_filter(path, opts, args)
+        if found is None:
+            raise FileNotFoundError(f"wasm filter {path} not found")
+        return _wasm_filter(found)
+    if path is not None and _scripts.is_python_script(path):
+        if _scripts.opted_out(path) is None:
+            return _scripts.Script(path, pandoc_version())
+        return _scripts.subprocess_callback(path, pandoc_version(), opts)
+    return None
 
 
 def _find_filter(path: str, opts: Mapping[str, Any] | None, args: Sequence[str]) -> str | None:
@@ -510,41 +529,6 @@ def _json_filter_path(f: Any) -> str | None:
     if isinstance(f, Mapping) and f.get("type") == "json":
         return f.get("path")
     return None
-
-
-def _callback(group: tuple[Any, ...], opts: Mapping[str, Any] | None) -> Any:
-    """A libpandoc callback running Python filters on the document (``opts``:
-    the conversion's options, if known)."""
-    user_opts = None if opts is None else {k: v for k, v in opts.items() if k != "filters"}
-
-    def run(doc_json: bytes, context: bytes) -> bytes:
-        conversion = Conversion.from_context(json.loads(context), user_opts)
-        doc = panir.loads(doc_json)
-        for f in group:
-            if isinstance(f, Filter):
-                doc = f(doc, conversion=conversion)
-            else:
-                result = f(doc, conversion) if _takes_conversion(f) else f(doc)
-                doc = doc if result is None else result
-            if not isinstance(doc, Pandoc):
-                raise TypeError(
-                    f"the filter {getattr(f, '__qualname__', f)!r} returned "
-                    f"{type(doc).__name__}, not a Pandoc"
-                )
-        return panir.dumps(doc).encode()
-
-    return run
-
-
-def _takes_conversion(fn: Any) -> bool:
-    try:
-        params = list(inspect.signature(fn).parameters.values())
-    except (TypeError, ValueError):
-        return False
-    if any(p.kind == p.VAR_POSITIONAL for p in params):
-        return True
-    positional = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
-    return len(positional) >= 2
 
 
 def run(args: Sequence[str], input: Source = None) -> bytes:
@@ -635,6 +619,7 @@ def read_many(sources: Iterable[str], from_: str | Conversion | None = None,
     conversion = isinstance(from_, Conversion)
     opts = read_options(from_) if conversion else {}
     opts.update(_options(options, kwargs))
+    opts.pop(_run.KEY, None)  # (no filters here: a filter's options passed on are taken)
     _refuse(opts, sorted(set(opts) - _READ_MANY_OPTIONS), "read_many",
             "it takes only the options that affect reading")
     _format(opts, "from", "reader", None if conversion else from_, "markdown")
