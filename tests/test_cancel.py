@@ -137,17 +137,30 @@ def test_one_token_for_many_calls():
 def test_a_python_filter_runs_to_its_end():
     """A Python filter running when the token is cancelled runs to its
     end; the call then fails. A filter may cancel its own call's token."""
+    # The token is cancelled once the filter is running; the filter waits
+    # to see it cancelled, then goes on to its end. (Not cancelled after a
+    # fixed time: on a busy CI runner a call had not reached its filter by
+    # then, and was cancelled before it; seen in libpandoc-rs's twin.)
     t = CancelToken()
-    ran = []
+    started, ran = threading.Event(), []
 
     def slow_filter(doc):
-        time.sleep(1)
+        started.set()
+        end = time.monotonic() + LIMIT
+        while not t.cancelled and time.monotonic() < end:
+            time.sleep(0.005)
+        time.sleep(0.1)
         ran.append(True)
 
-    timer = cancel_after(t, 0.2)
-    e, took = timed(pandoc.convert, "x", to="html", filters=[slow_filter], cancel=t)
-    timer.join()
-    assert isinstance(e, PandocCancelledError) and ran == [True] and took >= 1
+    def cancel_once_running():
+        started.wait(LIMIT)
+        t.cancel()
+
+    canceller = threading.Thread(target=cancel_once_running)
+    canceller.start()
+    e, _ = timed(pandoc.convert, "x", to="html", filters=[slow_filter], cancel=t)
+    canceller.join()
+    assert isinstance(e, PandocCancelledError) and ran == [True]
 
     t2 = CancelToken()
     e, _ = timed(pandoc.convert, "x", to="html", filters=[lambda doc: t2.cancel()], cancel=t2)
