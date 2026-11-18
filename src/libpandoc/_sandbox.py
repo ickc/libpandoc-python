@@ -33,7 +33,8 @@ module tells of pandoc's own sandbox only), so that what they read through
 pandoc is read in its sandbox. Limits: ``$LIBPANDOC_WASM_TIMEOUT`` and
 ``$LIBPANDOC_WASM_MAX_MEMORY`` (or the sandbox's ``"timeout"`` and
 ``"max-memory"``), as for wasm filters, counted from the module's start. A
-cancel token stops the module from outside, as the time limit does.
+cancel token stops the module from outside, as the time limit does (with
+untrusted options too: it is never in the options the module gets).
 
 The module: ``$LIBPANDOC_WASM``, else libpandoc's release's, downloaded
 once into the user's cache with its licence notices beside it

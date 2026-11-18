@@ -1,7 +1,8 @@
 """Cancelling calls (``CancelToken``, ``cancel=``; libpandoc 1.13's cancel
-tokens) and Ctrl-C: before, during and after a call, from another thread,
-with a filter running, in the directory sandbox, and SIGINT sent to a
-process converting a slow document.
+tokens, inside ``"untrusted"`` for untrusted options from 1.14) and
+Ctrl-C: before, during and after a call, from another thread, with a
+filter running, in the directory sandbox, and SIGINT sent to a process
+converting a slow document.
 
 The slow input is libpandoc's test/cancel.c's: 100,000 ``>`` read as
 markdown, minutes of pandoc's time (a ``timeout`` bounds each use here, so
@@ -77,14 +78,17 @@ def test_cancelled_before():
     for call in (lambda: pandoc.convert(SLOW, timeout=LIMIT, cancel=t),
                  lambda: pandoc.read("x", cancel=t),
                  lambda: pandoc.write(pandoc.read("x"), "html", cancel=t),
-                 lambda: pandoc.read_many(["a", "b"], cancel=t)):
+                 lambda: pandoc.read_many(["a", "b"], cancel=t),
+                 lambda: pandoc.convert(SLOW, timeout=LIMIT, cancel=t, untrusted=True),
+                 lambda: pandoc.read_many(["a", "b"], cancel=t, untrusted=True)):
         e, took = timed(call)
         assert isinstance(e, PandocCancelledError) and e.kind == "Cancelled", e
         assert isinstance(e, PandocError) and took < 1
 
 
 @needs_threads
-@pytest.mark.parametrize("how", ["convert", "read", "write", "read_many", "filters"])
+@pytest.mark.parametrize("how", ["convert", "read", "write", "read_many", "filters", "untrusted",
+                                 "read_many untrusted"])
 def test_cancelled_during(how):
     """From another thread, while pandoc runs: within about a second (the
     runtime switches threads every 20 ms), and the library goes on."""
@@ -96,6 +100,10 @@ def test_cancelled_during(how):
         "read_many": lambda: pandoc.read_many([SLOW, "x"], timeout=LIMIT, cancel=t),
         "filters": lambda: pandoc.convert(SLOW, timeout=LIMIT, cancel=t,
                                           filters=[lambda doc: None]),
+        # (the token inside "untrusted", which the host writes)
+        "untrusted": lambda: pandoc.convert(SLOW, timeout=LIMIT, cancel=t, untrusted=True),
+        "read_many untrusted": lambda: pandoc.read_many([SLOW, "x"], timeout=LIMIT, cancel=t,
+                                                        untrusted=True),
     }
     timer = cancel_after(t, 1)
     e, took = timed(calls[how])
@@ -168,12 +176,25 @@ def test_a_python_filter_runs_to_its_end():
 
 
 def test_untrusted_options():
-    """libpandoc takes no token in options from code it doesn't trust: one
-    given is its error; Ctrl-C's own token (on the main thread) isn't given
-    them, and the call runs."""
+    """Untrusted options take the token inside "untrusted", which the host
+    writes over whatever was there (libpandoc 1.14); a top-level
+    "cancel-token" beside "untrusted" is refused, as the code could have
+    written it. (On the main thread every call has a token: Ctrl-C's.)"""
+    from libpandoc._cancel import options
+
+    t = CancelToken()
     assert pandoc.convert("*x*", to="html", untrusted=True) == "<p><em>x</em></p>\n"
-    with pytest.raises(PandocError, match="cancel-token"):
-        pandoc.convert("*x*", to="html", untrusted=True, cancel=CancelToken())
+    assert pandoc.convert("*x*", to="html", untrusted=True, cancel=t) == "<p><em>x</em></p>\n"
+    assert pandoc.read_many(["*x*"], untrusted=True, cancel=t)[0] == pandoc.read("*x*")
+    for untrusted in (True, {}, {"cancel-token": 1}, "yes"):
+        assert options({"to": "html", "untrusted": untrusted}, t) == {
+            "to": "html", "untrusted": {"cancel-token": t._id}}
+    assert options({"untrusted": False}, t) == {"untrusted": False, "cancel-token": t._id}
+    assert options({"untrusted": True}, None) == {"untrusted": True}
+    for untrusted in (True, {}, {"cancel-token": t._id}):
+        with pytest.raises(PandocError) as e:
+            pandoc.convert("x", {"to": "html", "untrusted": untrusted, "cancel-token": t._id})
+        assert e.value.kind == "PandocOptionError", e.value
 
 
 def test_a_filter_sees_the_callers_context():
@@ -201,7 +222,10 @@ def test_the_directory_sandbox(tmp_path):
     pandoc.convert("x", to="html", sandbox=sandbox)  # (the module compiled)
     for call in (lambda t: pandoc.convert(SLOW, to="html", sandbox=sandbox, cancel=t),
                  lambda t: pandoc.convert("x", to="html", filters=[inside], sandbox=sandbox,
-                                          cancel=t)):
+                                          cancel=t),
+                 # untrusted options: the token is never in the module's options
+                 lambda t: pandoc.convert(SLOW, to="html", sandbox=sandbox, cancel=t,
+                                          untrusted=True)):
         t = CancelToken()
         timer = cancel_after(t, 1)
         e, took = timed(call, t)
@@ -213,6 +237,8 @@ def test_the_directory_sandbox(tmp_path):
     e, _ = timed(pandoc.convert, "x", to="html", sandbox=sandbox, cancel=t)
     assert isinstance(e, PandocCancelledError)
     assert pandoc.convert("x", to="html", sandbox=sandbox) == "<p>x</p>\n"
+    assert pandoc.convert("x", to="html", sandbox=sandbox, untrusted=True,
+                          cancel=CancelToken()) == "<p>x</p>\n"
 
 
 @needs_wasm
@@ -268,12 +294,12 @@ def interrupted(script: str, wait: float = 1.0) -> tuple[subprocess.CompletedPro
 
 
 @needs_signals
-@pytest.mark.parametrize("filters", [False, True])
-def test_ctrl_c(filters):
+@pytest.mark.parametrize("more", ["", ", filters=[lambda doc: None]", ", untrusted=True"])
+def test_ctrl_c(more):
     """Ctrl-C during a long conversion on the main thread: the call stops at
     once, and Python's usual KeyboardInterrupt ends the process (by SIGINT,
-    as Python does when one isn't caught)."""
-    more = ", filters=[lambda doc: None]" if filters else ""
+    as Python does when one isn't caught). Untrusted options too (the token
+    inside "untrusted": libpandoc 1.14)."""
     r, took = interrupted(SLOW_SCRIPT.format(source=repr(SLOW), more=more))
     assert "KeyboardInterrupt" in r.stderr and "ended after" in r.stdout, r
     assert r.returncode == -signal.SIGINT, r

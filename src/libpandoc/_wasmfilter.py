@@ -685,7 +685,9 @@ def _untrusted(what: Any) -> dict[str, Any]:
     """What a filter gives pandoc (options, or a query), marked
     ``"untrusted": true`` for libpandoc to check: it accepts only what
     reads and writes no files, fetches nothing and runs nothing, and turns
-    pandoc's sandbox on. The list is libpandoc's, the same for every host."""
+    pandoc's sandbox on. The list is libpandoc's, the same for every host.
+    Written over whatever the filter wrote, so that it can't name a cancel
+    token there (its calls stop with the conversion they run in)."""
     if not isinstance(what, dict):
         raise _Refused(_refusal("options that aren't an object"))
     return {**what, "untrusted": True}

@@ -141,6 +141,21 @@ def include(file: str, f=None) -> tuple[str | None, str | None]:
 
 
 @needs_filters
+def test_a_filter_names_no_cancel_token():
+    """A filter can't name a cancel token: the host writes "untrusted" over
+    what it wrote (its calls stop with the conversion they run in), and a
+    top-level "cancel-token" is refused."""
+    t = pandoc.CancelToken()
+    t.cancel()
+    a = call({"convert": [{"to": "html", "untrusted": {"cancel-token": t._id}}, "*x*"]},
+             {"convert": [{"to": "html", "cancel-token": t._id}, "*x*"]},
+             {"read_many": [["x"], {"untrusted": {"cancel-token": t._id}}]})
+    assert a[0] == {"ok": "<p><em>x</em></p>\n"}, a
+    assert a[1]["error"][0] == "PandocOptionError", a
+    assert len(a[2]["ok"]) == 1, a
+
+
+@needs_filters
 def test_it_sees_only_what_it_is_given(tree, capfd):
     common = tree / "common"
     # a directory under a name of the program's: here as the filter's "."
