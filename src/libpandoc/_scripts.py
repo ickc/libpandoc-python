@@ -2,14 +2,17 @@
 
 A filter that is a Python script (``.py``, or a Python ``#!`` line) runs in
 this process instead of a new one: as its own ``__main__``, with the
-document as its standard input, the output format as its argument, the
+document as its standard input (written when it reads it, if the filter
+before it in the run left it parsed: ``libpandoc._run``), the output
+format as its argument, the
 environment variables libpandoc gives JSON filters (pandoc's, and the
 formats with extensions, ``PANDOC_WRITER_OPTIONS`` and ``PANDOC_SANDBOX``),
 and its standard output as the result. That serves
 any framework (panflute, pandocfilters, panir, plain JSON) exactly as its
 own code runs, minus starting a Python process and importing it all again.
 A panir script's ``f.main()`` hands its ``Filter`` over instead, which then
-runs on the document directly, knowing the whole conversion.
+runs on the document directly (parsed, as the filter before it in the run
+left it), knowing the whole conversion.
 
 Scripts may run in several threads at once (several conversions): while any
 runs, ``sys.stdin``, ``sys.stdout``, ``sys.argv`` and ``os.environ`` are
@@ -161,62 +164,98 @@ def filter_env(ctx: Mapping[str, Any], pandoc_version: str) -> dict[str, str]:
     return env
 
 
-def callback(
-    path: str,
-    pandoc_version: str,
-    *,
-    options: Mapping[str, Any] | None = None,
-    in_process: bool = True,
-) -> Any:
-    """A libpandoc callback running the script ``path`` in this process,
-    or as a subprocess (stopped after the options' ``timeout``); with this
-    Python either way, rather than whichever ``python`` is on ``PATH``."""
+class Script:
+    """A Python filter script run in this process, a member of a run of
+    filters (``libpandoc._run``): called with its standard input (bytes
+    made only when it reads them) and the callback's context, it gives the
+    ``Filter``s it handed over, or what it wrote to its standard output."""
+
+    def __init__(self, path: str, pandoc_version: str) -> None:
+        self.path, self.pandoc_version = path, pandoc_version
+
+    def __repr__(self) -> str:
+        return f"Script({self.path!r})"
+
+    def __call__(self, stdin: Callable[[], bytes], context: bytes) -> list[panir.Filter] | bytes:
+        ctx = json.loads(context)
+        try:
+            return _in_process(self.path, stdin, ctx.get("format") or "",
+                               filter_env(ctx, self.pandoc_version))
+        except Exception as e:  # noqa: BLE001  whatever the script raised
+            raise self.failed(e) from (None if isinstance(e, ScriptFailed) else e)
+
+    def failed(self, e: BaseException) -> ScriptFailed:
+        """Its failure (``e``, raised by it or by a filter it handed over),
+        saying how to have it run in a process of its own."""
+        why = str(e) if isinstance(e, ScriptFailed) else f"{type(e).__name__}: {e}"
+        return ScriptFailed(
+            f"{self.path} failed ({why}). It ran in this process: if it needs one of its "
+            f"own, add the line '# pandocpy: subprocess' to it, or set "
+            f"{ENV}={Path(self.path).name}."
+        )
+
+
+def subprocess_callback(path: str, pandoc_version: str,
+                        options: Mapping[str, Any] | None = None) -> Callable[[bytes, bytes], bytes]:
+    """A script run as a subprocess, on the document's bytes, with this
+    Python rather than whichever ``python`` is on ``PATH``; stopped after
+    the options' ``timeout``."""
     timeout = (options or {}).get("timeout")
     if not (isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0):
         timeout = None
 
     def run(doc: bytes, context: bytes) -> bytes:
         ctx = json.loads(context)
-        env = filter_env(ctx, pandoc_version)
-        fmt = ctx.get("format") or ""
-        if not in_process:
-            return subprocess_run(path, doc, fmt, env, timeout)
-        try:
-            return _in_process(path, doc, fmt, env, lambda fs: _run_filters(fs, doc, ctx, options))
-        except Exception as e:  # noqa: BLE001  whatever the script raised
-            why = str(e) if isinstance(e, ScriptFailed) else f"{type(e).__name__}: {e}"
-            raise ScriptFailed(
-                f"{path} failed ({why}). It ran in this process: if it needs one of its "
-                f"own, add the line '# pandocpy: subprocess' to it, or set "
-                f"{ENV}={Path(path).name}."
-            ) from (None if isinstance(e, ScriptFailed) else e)
+        return subprocess_run(path, doc, ctx.get("format") or "", filter_env(ctx, pandoc_version),
+                              timeout)
 
     return run
 
 
-def _run_filters(fs: list[panir.Filter], doc: bytes, ctx: Mapping[str, Any], options: Any) -> bytes:
-    """A panir script's Filters, handed over (one for each filter of its
-    ``main([f, g])``): run on the document directly, in order."""
-    user = None if options is None else {k: v for k, v in options.items() if k != "filters"}
-    out = panir.loads(doc)
-    for f in fs:
-        out = f(out, conversion=panir.Conversion.from_context(ctx, user))
-    return panir.dumps(out).encode()
+class _Stdin(io.RawIOBase):
+    """A script's standard input: the bytes ``make`` gives, made the first
+    time it reads (a script that hands its filters over never does)."""
+
+    def __init__(self, make: Callable[[], bytes]) -> None:
+        super().__init__()
+        self._make: Callable[[], bytes] | None = make
+        self._data = memoryview(b"")
+
+    def _fill(self) -> None:
+        if self._make is not None:
+            make, self._make = self._make, None
+            self._data = memoryview(make())
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: Any) -> int:
+        self._fill()
+        n = min(len(b), len(self._data))
+        b[:n] = self._data[:n]
+        self._data = self._data[n:]
+        return n
+
+    def readall(self) -> bytes:
+        self._fill()
+        data, self._data = self._data, memoryview(b"")
+        return bytes(data)
 
 
 def _in_process(
     path: str,
-    doc: bytes,
+    stdin: Callable[[], bytes],
     fmt: str,
     env: Mapping[str, str],
-    handed: Callable[[list[panir.Filter]], bytes],
-) -> bytes:
+) -> list[panir.Filter] | bytes:
+    """Run the script here: the ``Filter``s it handed over, if any, else
+    the document it wrote."""
     filters: list[panir.Filter] = []
     out = io.BytesIO()
     token = panir.filter.handoff.set(filters.append)
     cwd = os.getcwd()
     with _redirected(
-        stdin=io.TextIOWrapper(io.BytesIO(doc), encoding="utf-8"),
+        stdin=io.TextIOWrapper(io.BufferedReader(_Stdin(stdin)), encoding="utf-8"),
         stdout=io.TextIOWrapper(out, encoding="utf-8", write_through=True),
         argv=[path, fmt],
         env=dict(env),
@@ -238,7 +277,7 @@ def _in_process(
             if os.getcwd() != cwd:
                 os.chdir(cwd)
     if filters:
-        return handed(filters)
+        return filters
     if not _DOCUMENT.match(result):  # (pandoc reads it, and says what is wrong in it)
         raise ScriptFailed("it wrote no document (pandoc's JSON) to its standard output")
     return result
