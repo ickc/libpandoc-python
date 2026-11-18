@@ -54,8 +54,10 @@ pandoc.write(f(doc), "plain")
   filter: `PandocCancelledError` (a `PandocError`), the process going on.
   It stops what `timeout` stops (in the directory sandbox, the whole
   conversion, Lua included). A token stays cancelled, and serves any number
-  of calls, one after another or at once. `untrusted=True` options take no
-  token (libpandoc's rule: a `PandocError`).
+  of calls, one after another or at once. With `untrusted=True` the token
+  goes inside the key the host writes, `"untrusted": {"cancel-token": N}`
+  (libpandoc 1.14), not beside it: a top-level `"cancel-token"` with
+  `"untrusted"` is refused, as the code could have written it.
 
   ```python
   token = pandoc.CancelToken()
@@ -65,8 +67,8 @@ pandoc.write(f(doc), "plain")
 
   **Ctrl-C** (`KeyboardInterrupt`) stops a call made on the main thread
   within milliseconds (it cancels the call's token, or one of its own),
-  natively and in the directory sandbox; not one made with `untrusted=True`
-  (no token: Ctrl-C takes effect when it returns), nor `run`. For that,
+  natively and in the directory sandbox, `untrusted=True` too; not `run`.
+  For that,
   a call on the main thread runs on a helper thread, one for the process,
   while the main thread waits, where Python delivers Ctrl-C: Python
   filters pandoc calls back then run on that thread, in a copy of the
@@ -93,7 +95,9 @@ pandoc.write(f(doc), "plain")
   those that read no files, write none, fetch nothing and run nothing, with
   pandoc's sandbox on and nothing read from the user data directory
   (libpandoc's list; anything else raises a `PandocError` naming it), for
-  options from code you don't trust. It bounds neither a document's time
+  options from code you don't trust: citeproc with the metadata's
+  references or files given as their contents (`citeproc_files=`, below
+  "Wasm filters"), not `bibliography`. It bounds neither a document's time
   nor its memory, and there is no memory limit for a call in this process
   (running out of memory ends it). For documents from someone you don't
   trust: the **directory sandbox** (below), or `sandbox=True` (pandoc's
@@ -171,8 +175,11 @@ returns it can: below the list):
   in pandoc's sandbox, with no options that read or write files, fetch or
   run anything, and nothing read from the user data directory (libpandoc
   checks them: `"untrusted"`). So they read no file, not even one the
-  filter can read itself: citeproc takes the metadata's inline
-  `references`, not a `bibliography` file;
+  filter can read itself: for citeproc, the filter reads the
+  bibliography, style and abbreviations itself and gives them as their
+  contents (below). A filter can't name a cancel token (`"untrusted"` is
+  written over what it wrote); its calls stop with the conversion they
+  run in;
 - **time and memory**, which pandoc limits for no filter:
   `$LIBPANDOC_WASM_TIMEOUT` (seconds, as pandoc-server's `--timeout`) and
   `$LIBPANDOC_WASM_MAX_MEMORY` (bytes, or with `k`, `m`, `g`, as pandoc's
@@ -196,6 +203,25 @@ you don't trust, confine the conversion too, as for a document you don't
 trust: the directory sandbox below, where pandoc reads only what you
 listed (pandoc's own, `sandbox=True` or `--sandbox`, covers its writers
 and citeproc, not a PDF engine).
+
+**citeproc in a wasm filter** (multibib and the like): its files are read
+by the filter, with the access its host gave it, and given to pandoc as
+their contents, `"citeproc-files"` (libpandoc 1.14): options `{"from":
+"json", "to": "json", "citeproc": true, "citeproc-files": {"NAME":
+"TEXT", ...}}`, each file under the name pandoc looks up: a bibliography
+as the metadata names it (`refs.bib`, `../common/refs.bib`, an absolute
+path), `csl: style` as `style.csl` and `citation-abbreviations: abbr` as
+`abbr.json` (a name with a dot as it is), TEXT the file as UTF-8 text.
+libpandoc-rs's `libpandoc::citeproc` does it for filters in Rust (its
+example filter `citeproc`); a file the filter can't read (outside its
+directories) is left out, and pandoc reports it missing.
+libpandoc's header has the rules (a dependent style's parent, LaTeX's
+`\bibliography`); URLs are never fetched. From Python the option is
+`citeproc_files=` (a dict), for a sandboxed conversion (`sandbox=True` or
+`untrusted=True`; without, it is refused, as citeproc would read the disk
+instead): a Python filter's own citeproc
+(`convert(..., citeproc=True)`) reads the files itself, with this
+process's access.
 
 ## Security: documents you don't trust
 
@@ -464,7 +490,7 @@ or a staged `dist/` prefix):
 LIBPANDOC_PREFIX=/path/to/prefix pip install .
 ```
 
-It needs libpandoc 1.13 or a later 1.x (libpandoc's rule: the same major
+It needs libpandoc 1.14 or a later 1.x (libpandoc's rule: the same major
 version, a minor at least as large), checked when the package is imported,
 for libpandoc.wasm in Pyodide too. The extension then finds the library in
 that prefix when it runs (an RPATH). `LIBPANDOC_RPATH` sets another, e.g. `$ORIGIN/...` relative to the
