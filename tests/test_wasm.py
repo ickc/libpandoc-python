@@ -529,3 +529,165 @@ def test_a_run_ends_once_wasmtime_has_freed_its_callbacks(tmp_path):
 
 if sys.platform == "emscripten":  # no wasmtime in Pyodide
     pytestmark = pytest.mark.skip
+
+
+# -- the environment -----------------------------------------------------------------
+
+OWN = ["PANDOC_INPUT_FORMAT", "PANDOC_OUTPUT_FORMAT", "PANDOC_READER_OPTIONS",
+       "PANDOC_SANDBOX", "PANDOC_VERSION", "PANDOC_WRITER_OPTIONS"]
+
+
+def told(f, **options) -> dict:
+    """What the example filter `conversion` was told: its report."""
+    out = json.loads(pandoc.convert("x", to="json", filters=[f], **options))
+    return json.loads(out["blocks"][-1]["c"][1])
+
+
+def seen(f, **options) -> tuple[list[str], dict]:
+    """The variables `conversion` saw besides the host's own, and the values
+    of those named LIBPANDOC_TEST_..."""
+    t = told(f, **options)
+    assert all(t["env"].count(n) == 1 for n in OWN), t["env"]
+    return [n for n in t["env"] if n not in OWN], t["test-env"]
+
+
+def quoted(name: str) -> str:
+    """A name as an error shows it: up to an `=`, in double quotes."""
+    return json.dumps(name.split("=", 1)[0] + "=..." if "=" in name else name, ensure_ascii=False)
+
+
+@pytest.fixture
+def test_env(monkeypatch):
+    """Variables for the tests: LIBPANDOC_TEST_A, _B and _SECRET set,
+    _MISSING not, LIBPANDOC_WASM_ENV unset."""
+    monkeypatch.delenv("LIBPANDOC_WASM_ENV", raising=False)
+    monkeypatch.delenv("LIBPANDOC_TEST_MISSING", raising=False)
+    for k, v in (("A", "a"), ("B", "b"), ("SECRET", "canary")):
+        monkeypatch.setenv(f"LIBPANDOC_TEST_{k}", v)
+    return monkeypatch
+
+
+@needs_filters
+def test_no_variable_of_the_process_by_default(test_env):
+    t = told(wasm("conversion"))
+    assert (t["env"], t["test-env"]) == (OWN, {})
+    assert seen(WasmFilter(wasm("conversion"))) == ([], {})
+
+
+@needs_filters
+def test_variables_given_by_name_or_with_values(test_env):
+    # by name: the process's values when it runs; one it lacks left out
+    f = WasmFilter(wasm("conversion"), env=["LIBPANDOC_TEST_A", "LIBPANDOC_TEST_MISSING"])
+    test_env.setenv("LIBPANDOC_TEST_A", "when it runs")
+    assert seen(f) == (["LIBPANDOC_TEST_A"], {"LIBPANDOC_TEST_A": "when it runs"})
+    # with values
+    f = WasmFilter(wasm("conversion"), env={"LIBPANDOC_TEST_B": "given", "LIBPANDOC_TEST_C": "c"})
+    assert seen(f) == (["LIBPANDOC_TEST_B", "LIBPANDOC_TEST_C"],
+                       {"LIBPANDOC_TEST_B": "given", "LIBPANDOC_TEST_C": "c"})
+    for none in ([], {}):
+        assert seen(WasmFilter(wasm("conversion"), env=none)) == ([], {})
+
+
+@needs_filters
+def test_the_variables_names(test_env):
+    """LIBPANDOC_WASM_ENV, read when the filter runs: several names, empty
+    entries skipped, one the process lacks left out; a program's own
+    names replace it."""
+    f = WasmFilter(wasm("conversion"))
+    test_env.setenv("LIBPANDOC_WASM_ENV",
+                    ",LIBPANDOC_TEST_A,,LIBPANDOC_TEST_MISSING,LIBPANDOC_TEST_B,LIBPANDOC_TEST_A,")
+    both = (["LIBPANDOC_TEST_A", "LIBPANDOC_TEST_B"], {"LIBPANDOC_TEST_A": "a", "LIBPANDOC_TEST_B": "b"})
+    assert seen(f) == both
+    assert seen(wasm("conversion")) == both
+    assert seen(WasmFilter(wasm("conversion"), env=[])) == ([], {})
+    assert seen(WasmFilter(wasm("conversion"), env=["LIBPANDOC_TEST_SECRET"]))[1] == {
+        "LIBPANDOC_TEST_SECRET": "canary"}
+    assert seen(WasmFilter(wasm("conversion"), env={"LIBPANDOC_TEST_C": "c"}))[1] == {
+        "LIBPANDOC_TEST_C": "c"}
+
+
+@needs_filters
+def test_the_hosts_own_variables_win(test_env):
+    for f in (WasmFilter(wasm("conversion"), env={"PANDOC_VERSION": "0", "PANDOC_SANDBOX": "yes"}),
+              WasmFilter(wasm("conversion"), env=["PANDOC_SANDBOX"])):
+        test_env.setenv("PANDOC_SANDBOX", "yes")
+        t = told(f)
+        assert (t["pandoc-version"], t["sandbox"], t["env"]) == (pandoc.pandoc_version(), "false", OWN)
+    test_env.setenv("PANDOC_VERSION", "0")
+    test_env.setenv("LIBPANDOC_WASM_ENV", "PANDOC_SANDBOX,PANDOC_VERSION")
+    t = told(wasm("conversion"))
+    assert (t["pandoc-version"], t["sandbox"], t["env"]) == (pandoc.pandoc_version(), "false", OWN)
+
+
+@needs_filters
+def test_what_cant_be_a_name(test_env):
+    """An error naming the entry, never showing a value: in the variable a
+    WasmFilterError when the filter runs; given by a program a ValueError
+    when the filter is made, naming it."""
+    path = wasm("conversion")
+    for entry, bad in (("LIBPANDOC_TEST_A,A B", "A B"), (" LIBPANDOC_TEST_A", " LIBPANDOC_TEST_A"),
+                       ("A\tB", "A\tB"), ("LIBPANDOC_TEST_A=canary,B", "LIBPANDOC_TEST_A=canary"),
+                       ("=canary", "=canary")):
+        test_env.setenv("LIBPANDOC_WASM_ENV", entry)
+        with pytest.raises(WasmFilterError) as e:
+            told(path)
+        assert str(e.value) == f"LIBPANDOC_WASM_ENV: not a variable's name: {quoted(bad)}"
+    assert quoted("A B") == '"A B"' and quoted("TOKEN=canary") == '"TOKEN=..."'
+    test_env.delenv("LIBPANDOC_WASM_ENV")
+    for name in ("A B", "", "A\0B", " ", "LIBPANDOC_TEST_A=canary"):
+        for env in ([name], {name: "canary"}):
+            with pytest.raises(ValueError) as e:
+                WasmFilter(path, env=env)
+            assert str(e.value) == f"{path}: not a variable's name: {quoted(name)}"
+    with pytest.raises(ValueError) as e:
+        WasmFilter(path, env={"LIBPANDOC_TEST_C": "can\0ary"})
+    assert str(e.value) == f"{path}: LIBPANDOC_TEST_C: its value has a NUL"
+    for env in ("LIBPANDOC_TEST_A", {"LIBPANDOC_TEST_A": 1}, [b"LIBPANDOC_TEST_A"]):
+        with pytest.raises(TypeError):
+            WasmFilter(path, env=env)
+
+
+@needs_filters
+@pytest.mark.skipif(sys.platform == "win32", reason="a value that isn't UTF-8: POSIX's bytes")
+def test_a_value_that_isnt_utf8(test_env):
+    test_env.setenv("LIBPANDOC_TEST_BAD", "canary\udcff")  # (b"canary\xff")
+    path = wasm("conversion")
+    with pytest.raises(WasmFilterError) as e:
+        told(WasmFilter(path, env=["LIBPANDOC_TEST_BAD"]))
+    assert str(e.value) == f"{path}: LIBPANDOC_TEST_BAD: its value is not UTF-8"
+    test_env.setenv("LIBPANDOC_WASM_ENV", "LIBPANDOC_TEST_BAD")
+    with pytest.raises(WasmFilterError) as e:
+        told(path)
+    assert str(e.value) == "LIBPANDOC_WASM_ENV: LIBPANDOC_TEST_BAD: its value is not UTF-8"
+
+
+@needs_filters
+def test_pandocpy_gives_the_variables_named():
+    """pandocpy: the variables LIBPANDOC_WASM_ENV names, no other; a bad
+    entry fails (status 83), never showing a value (in a child process:
+    the variable is the process's)."""
+
+    def pandocpy(names: str | None) -> subprocess.CompletedProcess:
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("LIBPANDOC_WASM_ENV", "LIBPANDOC_TEST_MISSING")}
+        env.update(LIBPANDOC_TEST_A="a", LIBPANDOC_TEST_SECRET="canary", PANDOC_VERSION="0")
+        if names is not None:
+            env["LIBPANDOC_WASM_ENV"] = names
+        return subprocess.run([sys.executable, "-m", "libpandoc", "-t", "json", "-F", wasm("conversion")],
+                              input=b"x", capture_output=True, env=env, timeout=120, check=False)
+
+    def told_by(r: subprocess.CompletedProcess) -> dict:
+        assert r.returncode == 0, r
+        return json.loads(json.loads(r.stdout)["blocks"][-1]["c"][1])
+
+    t = told_by(pandocpy(None))
+    assert (t["test-env"], [n for n in t["env"] if n not in OWN]) == ({}, [])
+    t = told_by(pandocpy("LIBPANDOC_TEST_A,,LIBPANDOC_TEST_MISSING,PANDOC_VERSION"))
+    assert t["test-env"] == {"LIBPANDOC_TEST_A": "a"}
+    assert t["pandoc-version"] == pandoc.pandoc_version()
+    for names, bad in (("LIBPANDOC_TEST_A,A B", '"A B"'),
+                       ("LIBPANDOC_TEST_SECRET=canary", '"LIBPANDOC_TEST_SECRET=..."')):
+        r = pandocpy(names)
+        assert r.returncode == 83, r
+        assert f"pandocpy: LIBPANDOC_WASM_ENV: not a variable's name: {bad}".encode() in r.stderr, r
+        assert b"canary" not in r.stderr + r.stdout, r

@@ -831,6 +831,31 @@ def test_a_wasm_filter_sees_its_own_directories(lab, monkeypatch):
         assert "CANARY" not in str(e.value)
 
 
+@needs_filters
+def test_the_variables_named_reach_wasm_filters_only(lab, monkeypatch):
+    """A wasm filter given a variable gets it in the directory sandbox too;
+    pandoc inside, and its Lua filters, don't (a Lua filter there sees the
+    sandbox's TMPDIR, not it)."""
+    conversion = str(Path(FILTERS) / "conversion.wasm")
+    monkeypatch.setenv("LIBPANDOC_WASM_ENV", "LIBPANDOC_TEST_GRANTED")
+    monkeypatch.setenv("LIBPANDOC_TEST_GRANTED", "granted")
+    (lab.work / "env.lua").write_text(
+        "function Pandoc(doc)\n"
+        "  doc.meta.granted = tostring(os.getenv('LIBPANDOC_TEST_GRANTED'))\n"
+        "  doc.meta.tmpdir = tostring(os.getenv('TMPDIR'))\n"
+        "  return doc\n"
+        "end\n")
+    for f, given in ((conversion, {"LIBPANDOC_TEST_GRANTED": "granted"}),
+                     (pandoc.WasmFilter(conversion, env={"LIBPANDOC_TEST_C": "c"}),
+                      {"LIBPANDOC_TEST_C": "c"})):
+        doc = json.loads(pandoc.convert("x", to="json", filters=["env.lua", f],
+                                        sandbox={"read": [str(lab.work)]}))
+        assert doc["meta"]["granted"]["c"] == "nil", doc["meta"]
+        assert doc["meta"]["tmpdir"]["c"] != "nil", doc["meta"]
+        told = json.loads(doc["blocks"][-1]["c"][1])
+        assert (told["sandbox"], told["test-env"]) == ("true", given), told
+
+
 def test_without_wasmtime_it_is_refused(lab, monkeypatch):
     """Without wasmtime the setting is refused, never ignored."""
     monkeypatch.setitem(sys.modules, "wasmtime", None)

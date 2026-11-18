@@ -4,8 +4,10 @@ A wasm filter is a pandoc JSON filter built for WASI (``wasm32-wasip1``),
 such as a panir Rust filter: the document on stdin, the new one on stdout,
 the output format as its first argument, the variables libpandoc gives
 JSON filters in its environment (``PANDOC_WRITER_OPTIONS`` among them). It
-runs sandboxed: no network, no programs, and only the directories it is
-given: by default none, as a wasm filter is for code you don't trust.
+runs sandboxed: no network, no programs, none of this process's
+environment variables but those it is given (below), and only the
+directories it is given: by default none, as a wasm filter is for code you
+don't trust.
 ``$LIBPANDOC_WASM_DIRS`` gives every filter some, read-only: directories as
 ``PATH`` lists them (``os.pathsep``; unset or empty: none), read when the
 filter runs, as its limits are. A program gives one filter its own instead
@@ -24,6 +26,32 @@ same Rust filter drops it built without link-time optimisation and keeps
 it, so fails, built with ``lto = true`` (as the one the tests run is). A
 symbolic link is refused when it leaves the directory its name is opened
 through, even into another one given.
+
+Of the environment it gets the host's own variables, from its conversion
+(``PANDOC_VERSION``, ``PANDOC_READER_OPTIONS``, ``PANDOC_WRITER_OPTIONS``,
+``PANDOC_INPUT_FORMAT``, ``PANDOC_OUTPUT_FORMAT``, ``PANDOC_SANDBOX``), and
+by default none of this process's: environment variables configure
+filters (pandoc-ext's pagebreak reads ``PANDOC_PAGEBREAK_HTML_CLASS`` and
+``PANDOC_PAGEBREAK_ODT_STYLE``), and they also hold tokens and passwords,
+which a filter run without auditing it is not to have.
+``$LIBPANDOC_WASM_ENV`` names some to give every filter, with this
+process's values: ``NAME,NAME`` (empty entries skipped; one the process
+doesn't have is left out), read when the filter runs, as its directories
+are. A program gives one filter its own instead (``WasmFilter``'s ``env``:
+names, their values this process's when it runs, or a mapping of names to
+values; empty: none), whatever the variable says. A name that can't be a
+variable's (with ``=``, a NUL or white space) is an error, showing the name
+up to an ``=`` only; no error shows a value. The host's own names are never
+a grant's.
+
+A filter can't tell a variable not set from one not given, and the host
+can't see what a filter looks up, so nothing says one was missing. A
+filter reads its configuration better from the document's metadata, which
+is in the document for all to see and the same in every host, and takes
+the environment as an override at most. This is about wasm filters only:
+pandoc in the directory sandbox, and its Lua filters, get the environment
+the sandbox gives them, whatever ``$LIBPANDOC_WASM_ENV`` says; Python
+filters and JSON filters (programs) see this process's whole environment.
 
 It may call pandoc through the imports of module ``libpandoc`` (libpandoc-rs's
 ``guest.rs``), which this host answers on this process's pandoc, marked
@@ -57,7 +85,7 @@ import sys
 import threading
 import time
 import weakref
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
 
 from ._scripts import filter_env
@@ -65,6 +93,14 @@ from ._scripts import filter_env
 TIMEOUT_VAR = "LIBPANDOC_WASM_TIMEOUT"
 MAX_MEMORY_VAR = "LIBPANDOC_WASM_MAX_MEMORY"
 DIRS_VAR = "LIBPANDOC_WASM_DIRS"
+ENV_VAR = "LIBPANDOC_WASM_ENV"
+# The variables the host sets for a filter (``filter_env``): its own, never a grant's.
+OWN_VARS = frozenset({"PANDOC_VERSION", "PANDOC_READER_OPTIONS", "PANDOC_WRITER_OPTIONS",
+                      "PANDOC_INPUT_FORMAT", "PANDOC_OUTPUT_FORMAT", "PANDOC_SANDBOX"})
+# What a variable's name can't have besides "=": a NUL, white space (Unicode's
+# White_Space, as the other hosts take it).
+_NOT_IN_A_NAME = re.compile("[\0\t\n\v\f\r \x85\xa0\u1680\u2000-\u200a\u2028\u2029"
+                            "\u202f\u205f\u3000]")
 
 # How often the engine's epoch advances, while a filter with a timeout runs (seconds).
 _TICK = 0.01
@@ -128,6 +164,45 @@ def limits(timeout: Any = None, max_memory: Any = None) -> tuple[float | None, i
 def env_dirs() -> list[str]:
     """The directories ``$LIBPANDOC_WASM_DIRS`` gives (empty entries skipped)."""
     return [d for d in os.environ.get(DIRS_VAR, "").split(os.pathsep) if d]
+
+
+def check_name(name: str) -> None:
+    """A ValueError if ``name`` can't be a variable's: empty, or with ``=``,
+    a NUL or white space. It shows the name up to an ``=`` only, as what
+    follows may be a value."""
+    if "=" in name:
+        shown = name.split("=", 1)[0] + "=..."
+    elif not name or _NOT_IN_A_NAME.search(name):
+        shown = name
+    else:
+        return
+    raise ValueError(f"not a variable's name: {_quoted(shown)}")
+
+
+def _quoted(s: str) -> str:
+    """A name in double quotes, as the other hosts show it (JSON's escapes)."""
+    return json.dumps(s, ensure_ascii=False)
+
+
+def env_names() -> list[str]:
+    """The names ``$LIBPANDOC_WASM_ENV`` gives (``NAME,NAME``, empty entries
+    skipped); a ValueError, naming the entry, for one that can't be a name."""
+    names = [n for n in os.environ.get(ENV_VAR, "").split(",") if n]
+    for n in names:
+        check_name(n)
+    return names
+
+
+def process_value(name: str) -> str | None:
+    """This process's value of the variable ``name``, if it has one; a
+    ValueError, naming it, if it isn't UTF-8 (as WASI takes it)."""
+    v = os.environ.get(name)
+    if v is not None:
+        try:
+            v.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ValueError(f"{name}: its value is not UTF-8") from None
+    return v
 
 
 Preopen = tuple[str, str, bool]  # (the host's path, the filter's, whether writable)
@@ -336,8 +411,15 @@ class WasmFilter:
     """A wasm filter: a pandoc JSON filter built for WASI (``wasm32-wasip1``),
     run in this process by wasmtime, sandboxed.
 
-    It sees no network, pandoc's filter variables, and only the directories
-    it is given: by default those of ``$LIBPANDOC_WASM_DIRS`` when it runs
+    It sees no network; pandoc's filter variables and only those of this
+    process it is given: by default those ``$LIBPANDOC_WASM_ENV`` names
+    (``NAME,NAME``) when it runs, with this process's values then. A program
+    gives it its own instead, whatever the variable says: ``env``, a list of
+    names (their values this process's when it runs; one it doesn't have
+    left out) or a mapping of names to values; ``env=[]``: none. A name that
+    can't be a variable's (with ``=``, a NUL or white space) is a ValueError
+    here, in the variable a ``WasmFilterError`` when it runs. And it sees
+    only the directories it is given: by default those of ``$LIBPANDOC_WASM_DIRS`` when it runs
     (none if unset or empty), read-only. A program gives it its own instead,
     whatever the variable says: ``dirs``, directories of this machine seen
     as the variable's are (the module's documentation: under their absolute
@@ -368,6 +450,7 @@ class WasmFilter:
         *,
         dirs: Sequence[str | os.PathLike[str]] | None = None,
         preopens: Sequence[tuple[str | os.PathLike[str], str, bool]] | None = None,
+        env: Sequence[str] | Mapping[str, str] | None = None,
         timeout: float | None = None,
         max_memory: int | None = None,
     ) -> None:
@@ -381,8 +464,10 @@ class WasmFilter:
                             "your own, preopens=[(host, guest, writable)]")
         if any(not (isinstance(p, tuple) and len(p) == 3) for p in preopens or ()):
             raise TypeError("preopens lists (host, guest, writable)")
-        wasmtime = _wasmtime()
         self.name = os.fsdecode(path)
+        # None: the variable's names, when it runs
+        self.env = None if env is None else self._checked_env(env)
+        wasmtime = _wasmtime()
         try:
             self._module = wasmtime.Module.from_file(engine(), self.name)
         except wasmtime.WasmtimeError as e:
@@ -400,6 +485,41 @@ class WasmFilter:
     def __repr__(self) -> str:
         return f"WasmFilter({self.name!r})"
 
+    def _checked_env(self, env: Any) -> list[str] | dict[str, str]:
+        """``env=``: names (a list), or names with values (a mapping of
+        strings); a TypeError, or a ValueError naming the filter, if not."""
+        if isinstance(env, (str, bytes)):
+            raise TypeError('env is a list of names or a mapping: env=["NAME"] or env={"NAME": value}')
+        given = dict(env) if isinstance(env, Mapping) else list(env)
+        values = given.values() if isinstance(given, dict) else ()
+        if any(not isinstance(x, str) for x in [*given, *values]):
+            raise TypeError("env's names and values are strings")
+        for name in given:
+            try:
+                check_name(name)
+            except ValueError as e:
+                raise ValueError(f"{self.name}: {e}") from None
+            if isinstance(given, dict) and "\0" in given[name]:
+                raise ValueError(f"{self.name}: {name}: its value has a NUL")
+        return given
+
+    def _env(self, ctx: dict[str, Any]) -> list[tuple[str, str]]:
+        """The filter's environment: the host's own variables, and those it is
+        given (``env``, else ``$LIBPANDOC_WASM_ENV``'s, with this process's
+        values now), never in place of the host's own."""
+        if isinstance(self.env, dict):
+            given = self.env
+        else:
+            # (an error names the variable, or the filter given the names)
+            prefix = ENV_VAR if self.env is None else self.name
+            try:
+                names = env_names() if self.env is None else self.env
+                given = {n: v for n in names if (v := process_value(n)) is not None}
+            except ValueError as e:
+                raise WasmFilterError(f"{prefix}: {e}") from None
+        own = filter_env(ctx, self._pandoc_version)
+        return [*own.items(), *((k, v) for k, v in given.items() if k not in OWN_VARS)]
+
     def __call__(self, doc: bytes, context: bytes) -> bytes:
         """Run the filter on a document (pandoc's JSON), given the context
         libpandoc gives a callback: as a libpandoc callback."""
@@ -411,9 +531,10 @@ class WasmFilter:
         its own directories, not the sandbox's."""
         wasmtime = _wasmtime()
         timeout, max_memory = limits(self.timeout, self.max_memory)
+        env = self._env(ctx)
         preopens = self._preopens()
         with ticking() if timeout is not None else contextlib.nullcontext():
-            return self._run(wasmtime, doc, ctx, timeout, max_memory, preopens)
+            return self._run(wasmtime, doc, ctx, timeout, max_memory, preopens, env)
 
     @property
     def _named(self) -> bool:
@@ -439,11 +560,12 @@ class WasmFilter:
                 f"{self.name}: {e}" if self._named else f"{self.name}: {DIRS_VAR}: {e}") from None
 
     def _run(self, wasmtime: Any, doc: bytes, ctx: dict[str, Any], timeout: float | None,
-             max_memory: int | None, preopens: Sequence[Preopen]) -> bytes:
+             max_memory: int | None, preopens: Sequence[Preopen],
+             env: list[tuple[str, str]]) -> bytes:
         wasi = wasmtime.WasiConfig()
         # (WASI's text: a file name that isn't UTF-8 with U+FFFD)
         wasi.argv = [os.fsencode(self.name).decode("utf-8", "replace"), ctx.get("format") or ""]
-        wasi.env = list(filter_env(ctx, self._pandoc_version).items())
+        wasi.env = env
         _stdin_bytes(wasi, doc)
         for host, guest, writable in preopens:
             try:

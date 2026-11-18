@@ -19,7 +19,9 @@ Python filter scripts (``-F foo.py``) run in this process too, unless they or
 the user say otherwise (``# pandocpy: subprocess``, ``$PANDOCPY_SUBPROCESS``):
 see ``libpandoc._scripts``. So do wasm filters (``-F foo.wasm``, with
 ``libpandoc[wasm]``), sandboxed, seeing no directory unless
-``$LIBPANDOC_WASM_DIRS`` gives some: see ``libpandoc.WasmFilter``. Other
+``$LIBPANDOC_WASM_DIRS`` gives some and no variable of this process's
+environment unless ``$LIBPANDOC_WASM_ENV`` names it: see
+``libpandoc.WasmFilter``. Other
 filters run as with pandoc.
 
 Consecutive filters of this process are one exchange with pandoc (one
