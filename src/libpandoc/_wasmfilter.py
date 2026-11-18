@@ -16,10 +16,14 @@ The filter sees each such directory under its absolute path (``C:\\x`` as
 relative to the working directory (``.``, ``..``, ``../common``, ``img``;
 none on another drive), and the working directory as ``.`` when it lies
 inside one: so ``../common/part.txt``, ``here.txt`` and absolute names work
-as for a native filter. wasi-libc matches the beginning of a path against
-those names as written, without normalising it: ``./../common/x`` and
-``img/../../common/x`` don't work, nor ``./img/x`` when only ``img`` is
-given, nor a symbolic link leaving a directory given.
+as for a native filter. The filter's own libc (wasi-libc) matches the
+beginning of a path against those names, without normalising it:
+``img/../../common/x`` doesn't work, and a leading ``./`` is not to be
+relied on (``./../common/x``; ``./img/x`` when only ``img`` is given): the
+same Rust filter drops it built without link-time optimisation and keeps
+it, so fails, built with ``lto = true`` (as the one the tests run is). A
+symbolic link is refused when it leaves the directory its name is opened
+through, even into another one given.
 
 It may call pandoc through the imports of module ``libpandoc`` (libpandoc-rs's
 ``guest.rs``), which this host answers on this process's pandoc, marked
