@@ -447,7 +447,7 @@ def test_pandocpy_a_bad_value_of_the_variable(tmp_path, capfd, monkeypatch, valu
            f'not "{value}"' in err
     # without filters, not read
     status, out, _ = pandocpy(capfd, "-t", "plain", str(md))
-    assert (status, out) == (0, "hi\n")
+    assert (status, paras(out)) == (0, ["hi"])  # (CRLF on Windows)
 
 
 @needs_filters
