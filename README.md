@@ -277,8 +277,45 @@ returns it can: below the list):
   In WASI an empty
   name is the working directory: `open("")` opens a directory, not a
   missing file;
-- **environment:** only the variables pandoc gives filters
-  (`PANDOC_VERSION`, `PANDOC_READER_OPTIONS`, ...), none of this process's;
+- **environment:** the variables pandoc gives filters (`PANDOC_VERSION`,
+  `PANDOC_READER_OPTIONS`, and libpandoc's `PANDOC_WRITER_OPTIONS`,
+  `PANDOC_INPUT_FORMAT`, `PANDOC_OUTPUT_FORMAT`, `PANDOC_SANDBOX`) and
+  **none of this process's** unless named. Environment variables configure
+  filters (pandoc-ext's pagebreak reads `PANDOC_PAGEBREAK_HTML_CLASS` and
+  `PANDOC_PAGEBREAK_ODT_STYLE`), and they also hold tokens and passwords,
+  which a filter run without auditing it is not to have.
+  `LIBPANDOC_WASM_ENV` names some to give every wasm filter, with this
+  process's values: names separated by commas (empty entries skipped; one
+  the process doesn't have is left out), read when the filter runs, as
+  its directories are:
+
+  ```sh
+  LIBPANDOC_WASM_ENV=MYFILTER_STYLE,MYFILTER_LANG pandocpy -F myfilter.wasm input.md
+  ```
+
+  An entry that can't be a variable's name (with `=`, a NUL or white
+  space) fails the filter before it runs, with a `WasmFilterError` naming
+  it up to an `=` (what follows may be a value):
+  `LIBPANDOC_WASM_ENV: not a variable's name: "A B"`, `...
+  "TOKEN=..."`; so does a value that isn't UTF-8 (`LIBPANDOC_WASM_ENV:
+  NAME: its value is not UTF-8`). No message ever shows a value. The
+  variables pandoc gives filters are the host's: a grant of one of those
+  names is not passed. A program gives one filter its own instead,
+  whatever the variable says: `WasmFilter(path, env=["NAME", ...])`, names
+  whose values are this process's when the filter runs, or
+  `env={"NAME": "value"}`, names with values (`env=[]`: none). A bad name
+  there is a `ValueError` when the filter is made (`PATH: not a variable's
+  name: "A B"`), as is a value with a NUL.
+
+  A filter can't tell a variable not set from one not given, and the host
+  can't see what a filter looks up: nothing says a filter missed one. So a
+  filter does better to read its configuration from the document's
+  metadata, which is in the document for all to see and works in every
+  host, with the environment as an override at most. All this is about
+  wasm filters only: in the directory sandbox pandoc and its Lua filters
+  get the environment the sandbox gives them, whatever
+  `LIBPANDOC_WASM_ENV` says, and Python filters and JSON filters
+  (programs) see this process's whole environment;
 - **calls to pandoc** (libpandoc-rs's `libpandoc` crate, built for wasm):
   in pandoc's sandbox, with no options that read or write files, fetch or
   run anything, and nothing read from the user data directory (libpandoc
