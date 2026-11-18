@@ -19,7 +19,7 @@ def test_versions():
     assert pandoc.pandoc_api_version()[:2] == panir.PANDOC_API_VERSION[:2]
     # libpandoc.h's rule, checked at import (natively and in Pyodide)
     abi, need = pandoc._core.abi_version(), pandoc._core.MIN_ABI_VERSION
-    assert need == 1013 and abi // 1000 == need // 1000 and abi >= need
+    assert need == 1014 and abi // 1000 == need // 1000 and abi >= need
     # (_wasm.py, Pyodide's _core, has its own copy of the number)
     wasm = (pathlib.Path(pandoc.__file__).parent / "_wasm.py").read_text(encoding="utf-8")
     assert f"\nMIN_ABI_VERSION = {need}\n" in wasm

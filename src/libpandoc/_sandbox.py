@@ -33,7 +33,9 @@ module tells of pandoc's own sandbox only), so that what they read through
 pandoc is read in its sandbox. Limits: ``$LIBPANDOC_WASM_TIMEOUT`` and
 ``$LIBPANDOC_WASM_MAX_MEMORY`` (or the sandbox's ``"timeout"`` and
 ``"max-memory"``), as for wasm filters, counted from the module's start. A
-cancel token stops the module from outside, as the time limit does.
+cancel token stops the module from outside, as the time limit does (with
+untrusted options too: it is never in the options the module gets), and
+once a filter returns after a cancel.
 
 The module: ``$LIBPANDOC_WASM``, else libpandoc's release's, downloaded
 once into the user's cache with its licence notices beside it
@@ -364,10 +366,10 @@ def _checked_abi(abi: int, path: str) -> None:
 class _Hooks:
     """The filters of this process the module calls back (``libpandoc.filter``
     with their index), on the calling thread, and the first exception one
-    raised (raised from the call, as natively)."""
+    raised (raised from the call, as natively); the call's cancel token."""
 
-    def __init__(self, callbacks: Sequence[Callable[[bytes, bytes], bytes]]) -> None:
-        self.callbacks = callbacks
+    def __init__(self, callbacks: Sequence[Callable[[bytes, bytes], bytes]], token: Any) -> None:
+        self.callbacks, self.token = callbacks, token
         self.error: BaseException | None = None
 
     def taken(self) -> BaseException | None:
@@ -396,6 +398,12 @@ class _Hooks:
                 mem = caller["memory"]
                 answer, status = self.run(index, _read(mem, caller, doc, dl),
                                           _read(mem, caller, ctx, cl)), 0
+                if self.token is not None and self.token.cancelled:
+                    # cancelled while the filter ran: stopped now, not at
+                    # the epoch's next tick, which the module could outrun
+                    # (a filter that saw the token cancelled and returned
+                    # before ``cancel`` advanced the epoch)
+                    raise _refused("the call was cancelled", "Cancelled")
             except BaseException as e:  # noqa: BLE001  raised from the call
                 if self.error is None:
                     self.error = e
@@ -463,7 +471,7 @@ def _run(m: Mounts, call: tuple[Any, ...], input: bytes | None,
         except (wasmtime.WasmtimeError, UnicodeEncodeError):
             raise _refused(f"sandbox: {host}: wasmtime can't open it") from None
     store, linker = wasmtime.Store(engine()), wasmtime.Linker(engine())
-    hooks = _Hooks(callbacks)
+    hooks = _Hooks(callbacks, token)
     started = time.monotonic()
     watch = None
     try:

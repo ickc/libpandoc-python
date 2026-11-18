@@ -1,9 +1,10 @@
 """Cancelling calls: ``CancelToken``, and Ctrl-C on the main thread.
 
 A call given a token (``cancel=``) stops when the token is cancelled, from
-another thread or from a filter: libpandoc's cancel tokens (1.13), and in
-the directory sandbox by stopping libpandoc.wasm from outside (wasmtime's
-epoch, as its time limit does).
+another thread or from a filter: libpandoc's cancel tokens (1.13; with
+untrusted options inside ``"untrusted"``, 1.14), and in the directory
+sandbox by stopping libpandoc.wasm from outside (wasmtime's epoch, as its
+time limit does).
 
 Ctrl-C: Python runs its signal handlers on the main thread, between
 bytecodes, so a call into pandoc there (the GIL released, for seconds) took
@@ -51,18 +52,19 @@ class CancelToken:
     filters pandoc runs, and in the directory sandbox the whole of pandoc,
     Lua included; not a Python filter running (it runs to its end, and the
     call then fails) nor Lua outside the sandbox. A call that finished
-    before the cancel keeps its result.
+    before the cancel keeps its result. Once ``cancelled`` is true, every
+    call using the token fails as cancelled: a filter that sees it and
+    returns can rely on its conversion failing so.
 
         token = libpandoc.CancelToken()
         threading.Timer(5, token.cancel).start()   # a cancel button
         libpandoc.convert(text, to="html", cancel=token)
     """
 
-    __slots__ = ("_cancelled", "_for_ctrl_c", "_id")
+    __slots__ = ("_cancelled", "_id")
 
     def __init__(self) -> None:
         self._cancelled = False
-        self._for_ctrl_c = False  # (made by ``call`` for one call)
         new = getattr(_core, "cancel_token_new", None)  # (none in Pyodide)
         self._id: int = new() if new is not None else 0
 
@@ -70,9 +72,13 @@ class CancelToken:
         """Stop every call using this token, running or to come. From any
         thread (not a signal handler's own C code: Python's handlers, which
         run on the main thread, may call it)."""
-        self._cancelled = True
+        # pandoc first, then the flag: once ``cancelled`` says so, pandoc
+        # knows (a filter that sees it and returns can't let a short
+        # conversion end well); the flag before the epoch advances, which
+        # has the directory sandbox look at it
         if self._id:
             _core.cancel(self._id)
+        self._cancelled = True
         interrupt()
 
     @property
@@ -92,13 +98,15 @@ class CancelToken:
 
 
 def options(opts: Mapping[str, Any], token: CancelToken | None) -> Mapping[str, Any]:
-    """The options with libpandoc's ``"cancel-token"`` for ``token``. Not
-    ``"untrusted"`` ones with the token ``call`` made for Ctrl-C: libpandoc
-    takes no token in options from code it doesn't trust (a token given
-    with them is its error), and Ctrl-C then takes effect when the call
-    returns."""
-    if token is None or not token._id or (token._for_ctrl_c and opts.get("untrusted")):
+    """The options with libpandoc's ``"cancel-token"`` for ``token``; for
+    untrusted ones (any ``"untrusted"`` but false), inside the key the host
+    writes, over whatever it was: ``"untrusted": {"cancel-token": N}``
+    (libpandoc 1.14), as a top-level one beside ``"untrusted"`` is refused
+    (the code could have written it)."""
+    if token is None or not token._id:
         return opts
+    if opts.get("untrusted", False) is not False:
+        return {**opts, "untrusted": {"cancel-token": token._id}}
     return {**opts, "cancel-token": token._id}
 
 
@@ -113,7 +121,6 @@ def call(fn: Callable[[CancelToken | None], T], token: CancelToken | None) -> T:
     try:
         if token is None:
             token = CancelToken()
-            token._for_ctrl_c = True
         job = _Job(contextvars.copy_context(), fn, token)
         _helper().put(job)
         try:
