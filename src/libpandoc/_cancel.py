@@ -52,7 +52,9 @@ class CancelToken:
     filters pandoc runs, and in the directory sandbox the whole of pandoc,
     Lua included; not a Python filter running (it runs to its end, and the
     call then fails) nor Lua outside the sandbox. A call that finished
-    before the cancel keeps its result.
+    before the cancel keeps its result. Once ``cancelled`` is true, every
+    call using the token fails as cancelled: a filter that sees it and
+    returns can rely on its conversion failing so.
 
         token = libpandoc.CancelToken()
         threading.Timer(5, token.cancel).start()   # a cancel button
@@ -70,9 +72,13 @@ class CancelToken:
         """Stop every call using this token, running or to come. From any
         thread (not a signal handler's own C code: Python's handlers, which
         run on the main thread, may call it)."""
-        self._cancelled = True
+        # pandoc first, then the flag: once ``cancelled`` says so, pandoc
+        # knows (a filter that sees it and returns can't let a short
+        # conversion end well); the flag before the epoch advances, which
+        # has the directory sandbox look at it
         if self._id:
             _core.cancel(self._id)
+        self._cancelled = True
         interrupt()
 
     @property

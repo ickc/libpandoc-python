@@ -142,13 +142,22 @@ def test_one_token_for_many_calls():
 
 
 @needs_threads
-def test_a_python_filter_runs_to_its_end():
+@pytest.mark.parametrize("sandbox", [
+    None,
+    # (no time limit: only the cancel advances the module's epoch, and the
+    # module is stopped when the filter returns, not at a tick)
+    pytest.param({"read": [], "timeout": 0}, marks=needs_wasm, id="directory-sandbox"),
+])
+def test_a_python_filter_runs_to_its_end(sandbox):
     """A Python filter running when the token is cancelled runs to its
-    end; the call then fails. A filter may cancel its own call's token."""
+    end; the call then fails. A filter may cancel its own call's token.
+    Natively and in the directory sandbox."""
     # The token is cancelled once the filter is running; the filter waits
-    # to see it cancelled, then goes on to its end. (Not cancelled after a
-    # fixed time: on a busy CI runner a call had not reached its filter by
-    # then, and was cancelled before it; seen in libpandoc-rs's twin.)
+    # to see it cancelled, then goes on to its end, and the call fails
+    # (once ``cancelled`` is true, pandoc knows: the order inside
+    # ``cancel``). (Not cancelled after a fixed time: on a busy CI runner a
+    # call had not reached its filter by then, and was cancelled before
+    # it; seen in libpandoc-rs's twin.)
     t = CancelToken()
     started, ran = threading.Event(), []
 
@@ -166,13 +175,50 @@ def test_a_python_filter_runs_to_its_end():
 
     canceller = threading.Thread(target=cancel_once_running)
     canceller.start()
-    e, _ = timed(pandoc.convert, "x", to="html", filters=[slow_filter], cancel=t)
+    e, _ = timed(pandoc.convert, "x", to="html", filters=[slow_filter], cancel=t, sandbox=sandbox)
     canceller.join()
-    assert isinstance(e, PandocCancelledError) and ran == [True]
+    assert isinstance(e, PandocCancelledError) and ran == [True], e
 
     t2 = CancelToken()
-    e, _ = timed(pandoc.convert, "x", to="html", filters=[lambda doc: t2.cancel()], cancel=t2)
-    assert isinstance(e, PandocCancelledError)
+    e, _ = timed(pandoc.convert, "x", to="html", filters=[lambda doc: t2.cancel()], cancel=t2,
+                 sandbox=sandbox)
+    assert isinstance(e, PandocCancelledError), e
+
+
+@pytest.mark.skipif(sys.platform == "emscripten", reason="no libpandoc tokens in Pyodide")
+def test_pandoc_is_told_first(monkeypatch):
+    """``cancel`` tells pandoc before ``cancelled`` says so: a filter that
+    sees it and returns can't let a short conversion end well (that failed
+    libpandoc-rs's twin of the test above on a slow macOS runner)."""
+    from libpandoc import _cancel
+
+    t, seen, core = CancelToken(), [], _cancel._core
+
+    class Core:
+        def __getattr__(self, name):
+            return getattr(core, name)
+
+        def cancel(self, id):
+            seen.append(t.cancelled)
+            core.cancel(id)
+
+    monkeypatch.setattr(_cancel, "_core", Core())
+    t.cancel()
+    assert seen == [False] and t.cancelled
+
+
+@needs_wasm
+def test_the_directory_sandbox_stops_when_a_filter_returns(monkeypatch):
+    """In the sandbox, a filter that returns after its token was cancelled
+    ends the call as cancelled, though ``cancel`` hasn't advanced the epoch
+    yet (here: never), which a short conversion could outrun."""
+    from libpandoc import _cancel
+
+    monkeypatch.setattr(_cancel, "interrupt", lambda: None)
+    t = CancelToken()
+    e, _ = timed(pandoc.convert, "x", to="html", filters=[lambda doc: t.cancel()], cancel=t,
+                 sandbox={"read": [], "timeout": 0})
+    assert isinstance(e, PandocCancelledError), e
 
 
 def test_untrusted_options():
