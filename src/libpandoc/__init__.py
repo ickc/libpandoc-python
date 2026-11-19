@@ -520,15 +520,24 @@ def _wasm_filter(path: str) -> WasmFilter:
     return cached[1]
 
 
+# libpandoc's include step (1.15) among the filters: "panclude", -F panclude
+# ({"type": "json", "path": "panclude"}), which libpandoc runs itself
+_PANCLUDE = "panclude"
+
+
 def _json_filter_path(f: Any) -> str | None:
     """The path of a JSON filter as pandoc reads the "filters" option: a
-    string not ending in .lua (nor "citeproc"), or {"type": "json"}."""
+    string not ending in .lua (nor "citeproc"), or {"type": "json"}. Not
+    the include step's name, which libpandoc runs, whatever a file of that
+    name is (a program named so runs as ``./panclude``)."""
     if isinstance(f, (str, bytes, os.PathLike)):
         s = os.fsdecode(f)
-        return None if s == "citeproc" or s.lower().endswith(".lua") else s
-    if isinstance(f, Mapping) and f.get("type") == "json":
-        return f.get("path")
-    return None
+        path = None if s == "citeproc" or s.lower().endswith(".lua") else s
+    elif isinstance(f, Mapping) and f.get("type") == "json":
+        path = f.get("path")
+    else:
+        return None
+    return None if path == _PANCLUDE else path
 
 
 def run(args: Sequence[str], input: Source = None) -> bytes:
