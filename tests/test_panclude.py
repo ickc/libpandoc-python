@@ -34,15 +34,15 @@ unix = pytest.mark.skipif(sys.platform == "win32", reason="symbolic links need a
 # link inside it that leads out
 DOC = textwrap.dedent("""\
     ```{include="part.txt"}
-    PLACEHOLDER-PART
+    OWN-PART
     ```
 
     ```{include="../secret.txt"}
-    PLACEHOLDER-OUT
+    OWN-OUT
     ```
 
     ```{include="link.txt"}
-    PLACEHOLDER-LINK
+    OWN-LINK
     ```
     """)
 NO_ROOTS = "there are no roots, so no file is included"
@@ -101,26 +101,26 @@ def cannot(path: str, file: Path | str, reason: str) -> str:
 def test_by_default_inside_the_documents_directory(tree):
     doc = tree / "doc" / "doc.md"
     out, said = converted(tree, ["panclude"])
-    assert "hello *from the part*" in out and "PLACEHOLDER-OUT" in out
+    assert "hello *from the part*" in out and "OWN-OUT" in out
     assert cannot("../secret.txt", doc, "outside the roots") in said
     if sys.platform != "win32":
-        assert "PLACEHOLDER-LINK" in out
+        assert "OWN-LINK" in out
         assert cannot("link.txt", doc, "a symbolic link leads outside the roots") in said
     # off unless named
     out, said = converted(tree, [])
-    assert "PLACEHOLDER-PART" in out and said == []
+    assert "OWN-PART" in out and "hello" not in out and said == []
 
 
 def test_roots_given(tree):
     doc = tree / "doc" / "doc.md"
     other = tree / "other"
     out, said = converted(tree, [{"type": "panclude", "roots": [other]}])
-    assert "PLACEHOLDER-PART" in out
+    assert "OWN-PART" in out and "hello" not in out
     assert cannot("part.txt", doc, "outside the roots") in said
     out, _ = converted(tree, [{"type": "panclude", "roots": [str(tree / "doc"), other]}])
     assert "hello *from the part*" in out
     out, said = converted(tree, [{"type": "panclude", "roots": []}])
-    assert "PLACEHOLDER-PART" in out and cannot("part.txt", doc, NO_ROOTS) in said
+    assert "OWN-PART" in out and "hello" not in out and cannot("part.txt", doc, NO_ROOTS) in said
     # a root that isn't a directory, a field it hasn't: errors
     for bad in ({"type": "panclude", "roots": [tree / "secret.txt"]},
                 {"type": "panclude", "root": [other]}):
@@ -132,7 +132,7 @@ def test_roots_given(tree):
 def test_under_pandocs_sandbox_only_roots_named(tree):
     doc = tree / "doc" / "doc.md"
     out, said = converted(tree, ["panclude"], sandbox=True)
-    assert "PLACEHOLDER-PART" in out and cannot("part.txt", doc, NO_ROOTS) in said
+    assert "OWN-PART" in out and "hello" not in out and cannot("part.txt", doc, NO_ROOTS) in said
     out, said = converted(tree, [{"type": "panclude", "roots": [tree / "doc"]}], sandbox=True)
     assert "hello *from the part*" in out
     assert cannot("../secret.txt", doc, "outside the roots") in said
@@ -155,7 +155,7 @@ def test_untrusted_options_read_only_the_hosts_roots(tree):
     roots the host gives (inside "untrusted"), on any thread, with a cancel
     token too; without them nothing; their own roots are refused."""
     part = (tree / "doc" / "part.txt").as_posix()
-    text = f'```{{include="{part}"}}\nPLACEHOLDER-PART\n```\n'
+    text = f'```{{include="{part}"}}\nOWN-PART\n```\n'
     roots = [str(tree / "doc")]
 
     def untrusted(host, **kw):
@@ -164,7 +164,7 @@ def test_untrusted_options_read_only_the_hosts_roots(tree):
         return out, said
 
     out, said = untrusted(True)
-    assert "PLACEHOLDER-PART" in out and said[0].endswith(NO_ROOTS)
+    assert "OWN-PART" in out and "hello" not in out and said[0].endswith(NO_ROOTS)
     # the host's roots: on the main thread (whose calls get a token of their
     # own for Ctrl-C), with a token given, and on another thread
     host = {"panclude-roots": roots}
@@ -241,7 +241,7 @@ def test_pandocpy_panclude_is_the_step(tree, site):
     assert "hello *from the part*" in out and outside in err
     status, out, err = pandocpy(work, ["doc.md", "-t", "plain", "--sandbox", "-F", "panclude"],
                                 site=site)
-    assert status == 0 and "PLACEHOLDER-PART" in out and NO_ROOTS in err, err
+    assert status == 0 and "OWN-PART" in out and "hello" not in out and NO_ROOTS in err, err
     assert not (work / "ran.txt").exists()
     assert "RAN-INSTALLED" not in err and "CANARY" not in out + err
     # not listed among the installed filters either
@@ -259,19 +259,19 @@ def wasm(name: str) -> str:
 def test_a_wasm_filter_given_no_directory_sees_the_content(tree, monkeypatch):
     """The step first, then wasm filters given no directory: parse reads the
     code block's text as the document was read, upper upper-cases it. They
-    see the file's text; without the step, never."""
+    see the file's text, after the block's own; without the step, never."""
     pytest.importorskip("wasmtime")
     monkeypatch.delenv("LIBPANDOC_WASM_DIRS", raising=False)
-    (tree / "doc" / "doc.md").write_text('```{.parse include="part.txt"}\nplaceholder\n```\n')
+    (tree / "doc" / "doc.md").write_text('```{.parse include="part.txt"}\nbefore the part:\n```\n')
     after = [wasm("parse"), wasm("upper")]
-    assert converted(tree, ["panclude", *after])[0] == "HELLO FROM THE PART\n"
-    assert converted(tree, after)[0] == "PLACEHOLDER\n"
+    assert converted(tree, ["panclude", *after])[0] == "BEFORE THE PART: HELLO FROM THE PART\n"
+    assert converted(tree, after)[0] == "BEFORE THE PART:\n"
     roots = [{"type": "panclude", "roots": [tree / "doc"]}]
-    assert converted(tree, roots + after, sandbox=True)[0] == "HELLO FROM THE PART\n"
+    assert converted(tree, roots + after, sandbox=True)[0] == "BEFORE THE PART: HELLO FROM THE PART\n"
     # pandocpy, the same
     status, out, err = pandocpy(tree / "doc", ["doc.md", "-t", "plain", "-F", "panclude",
                                                "-F", wasm("parse"), "-F", wasm("upper")])
-    assert (status, out) == (0, "HELLO FROM THE PART\n"), err
+    assert (status, out) == (0, "BEFORE THE PART: HELLO FROM THE PART\n"), err
 
 
 @needs_filters
@@ -289,7 +289,7 @@ def test_a_wasm_filters_calls_read_nothing(tree):
         # (paths natively, and as the module sees them)
         path = named if sandboxed else (lambda p: Path(p).as_posix())
         secret, root = path(tree / "secret.txt"), path(tree)
-        part = f'```{{include="{secret}"}}\nPLACEHOLDER\n```\n'
+        part = f'```{{include="{secret}"}}\nOWN\n```\n'
         requests = [
             {"convert": [{"to": "plain", "filters": ["panclude"]}, part]},
             {"convert": [{"to": "plain", "filters": ["panclude"],
@@ -308,7 +308,7 @@ def test_a_wasm_filters_calls_read_nothing(tree):
         assert "CANARY" not in out
         answers = [json.loads(b["c"][1]) for b in json.loads(out)["blocks"]]
         for a in answers[:3]:
-            assert a["ok"].strip() == "PLACEHOLDER", (options, a)
+            assert a["ok"].strip() == "OWN", (options, a)
         for a in answers[3:]:
             assert a["error"][0] == "PandocOptionError", (options, a)
 
@@ -325,26 +325,26 @@ def test_in_the_directory_sandbox_nothing_outside_the_mounts(tree):
     doc = tree / "doc"
     mounts = {"read": [str(doc)]}
     secret = named(tree / "secret.txt")
-    (doc / "doc.md").write_text(f'```{{include="{secret}"}}\nPLACEHOLDER-ABS\n```\n\n{DOC}')
+    (doc / "doc.md").write_text(f'```{{include="{secret}"}}\nOWN-ABS\n```\n\n{DOC}')
     file = named(doc / "doc.md")
     for filters in (["panclude"], [{"type": "panclude", "roots": [named(doc)]}]):
         out, said = converted(tree, filters, input_files=[file], sandbox=mounts)
-        assert "hello *from the part*" in out and "PLACEHOLDER-ABS" in out and "PLACEHOLDER-OUT" in out
+        assert "hello *from the part*" in out and "OWN-ABS" in out and "OWN-OUT" in out
         assert cannot("../secret.txt", file, "outside the roots") in said
         if sys.platform != "win32":
-            assert "PLACEHOLDER-LINK" in out
+            assert "OWN-LINK" in out
     with pytest.raises(pandoc.PandocError) as e:
         converted(tree, [{"type": "panclude", "roots": [named(tree)]}], input_files=[file],
                   sandbox=mounts)
     assert e.value.kind == "PandocOptionError" and "is not a directory" in e.value.message
     # untrusted, with the host's roots as the module names them
-    text = f'```{{include="{named(doc / "part.txt")}"}}\nPLACEHOLDER-PART\n```\n'
+    text = f'```{{include="{named(doc / "part.txt")}"}}\nOWN-PART\n```\n'
     out = pandoc.convert(text, to="plain", filters=["panclude"], sandbox=mounts,
                          untrusted={"panclude-roots": [named(doc)]})
     assert "hello *from the part*" in out
     with recorded():
         out = pandoc.convert(text, to="plain", filters=["panclude"], sandbox=mounts, untrusted=True)
-    assert "PLACEHOLDER-PART" in out
+    assert "OWN-PART" in out and "hello" not in out
     # pandocpy, the working directory mounted
     status, out, err = pandocpy(doc, ["doc.md", "-t", "plain", "-F", "panclude"],
                                 env={"LIBPANDOC_SANDBOX": ".", "LIBPANDOC_WASM_TIMEOUT": "120"})
