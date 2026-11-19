@@ -674,6 +674,14 @@ in the directory sandbox (above), on this process's standard input, output
 and error: pandoc's own messages, `--quiet`, `--verbose`, `--log` and
 exit statuses.
 
+It ends as pandoc does: pandoc's own errors with pandoc's messages and
+exit statuses; a filter of its own that fails, with status 83: a wasm
+filter with its message (`pandocpy: ...`), a Python filter with its
+exception's traceback (the filter's, as a Python script prints one). A
+standard output closed early (`pandocpy --version | head -1`) ends it
+quietly with status 0, as pandoc's own output does; another failure to
+write its own line (a full disk) is said, status 1.
+
 ## The AST
 
 Documents are [panir](https://github.com/ickc/panir) objects: pandoc's

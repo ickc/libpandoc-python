@@ -43,6 +43,7 @@ its default action (Python's handler would run only when pandoc returned).
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import signal
@@ -173,16 +174,29 @@ def _text(arg: str) -> str:
 
 
 def run_main() -> None:
-    """The console script: main(), quiet if its output is cut short (as by
-    ``| head``), as pandoc is."""
+    """The console script: main(), quiet with status 0 if its output is cut
+    short (as by ``| head``), as pandoc is; another failure to write it (a
+    full disk) said, status 1."""
     try:
         status = main()
         sys.stdout.flush()
-    except BrokenPipeError:
+    except OSError as e:  # (writing standard output: main reports the rest)
+        closed = _closed(e)
+        if not closed:
+            print(f"{PROG}: {e}", file=sys.stderr)
+        # what is left unwritten, Python would write again at exit and
+        # report ("Exception ignored")
         devnull = os.open(os.devnull, os.O_WRONLY)
         os.dup2(devnull, sys.stdout.fileno())
-        status = 0
+        status = 0 if closed else 1
     sys.exit(status)
+
+
+def _closed(e: OSError) -> bool:
+    """Whether writing failed because the reader is gone: EPIPE, or on
+    Windows EINVAL (a pipe being closed, which the C runtime calls so)."""
+    return isinstance(e, BrokenPipeError) or (
+        sys.platform == "win32" and e.errno == errno.EINVAL)
 
 
 if __name__ == "__main__":
