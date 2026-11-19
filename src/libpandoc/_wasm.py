@@ -38,7 +38,7 @@ class _NotLoaded:
 
 
 # The libpandoc this package needs, as _core.c's MIN_ABI_VERSION.
-MIN_ABI_VERSION = 1015
+MIN_ABI_VERSION = 1016
 
 
 def _checked(abi: Any) -> Any:

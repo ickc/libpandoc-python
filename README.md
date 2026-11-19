@@ -378,9 +378,10 @@ no more than the document's own list (`LIBPANDOC_SANDBOX`).
 ## The include step: panclude
 
 [panclude](https://github.com/ickc/panclude)'s `include` attribute is
-built into libpandoc (1.15): a code block, raw block or div naming a file
-is filled with it inside the conversion, so that every filter after the
-step sees the content as if the document held it. It is off unless named
+built into libpandoc: a code block or div naming a file gets the file's
+content inside the conversion, after what it holds itself (from 1.16;
+1.15 replaced it), so that every filter after the step sees the content
+as if the document held it. It is off unless named
 among the filters: `filters=["panclude", ...]`, or `pandocpy -F
 panclude`; first, before the filters that are to see the content.
 
@@ -706,7 +707,7 @@ or a staged `dist/` prefix):
 LIBPANDOC_PREFIX=/path/to/prefix pip install .
 ```
 
-It needs libpandoc 1.15 or a later 1.x (libpandoc's rule: the same major
+It needs libpandoc 1.16 or a later 1.x (libpandoc's rule: the same major
 version, a minor at least as large), checked when the package is imported,
 for libpandoc.wasm in Pyodide too. The extension then finds the library in
 that prefix when it runs (an RPATH). `LIBPANDOC_RPATH` sets another, e.g. `$ORIGIN/...` relative to the

@@ -16,8 +16,8 @@
 #include <libpandoc.h>
 
 /* The libpandoc this module needs: the same major version and at least
- * this minor (libpandoc.h's rule), checked at import. 1.15: the include
- * step ("panclude" among the filters; "untrusted": {"panclude-roots":
+ * this minor (libpandoc.h's rule), checked at import. 1.16: the include
+ * step appends to what the element holds; 1.15: the include step ("panclude" among the filters; "untrusted": {"panclude-roots":
  * [...]}); 1.14: untrusted
  * options take the host's cancel token inside "untrusted", and
  * "citeproc-files"; 1.13: cancel tokens and filters told whether pandoc's sandbox is on; "timeout" and writer
@@ -25,7 +25,7 @@
  * meaning (1.9), "untrusted" reading nothing of the user data directory
  * (1.10). _wasm.py checks libpandoc.wasm by the same numbers. */
 #define MIN_ABI_MAJOR 1
-#define MIN_ABI_MINOR 15
+#define MIN_ABI_MINOR 16
 #if LIBPANDOC_ABI_VERSION_MAJOR != MIN_ABI_MAJOR || LIBPANDOC_ABI_VERSION_MINOR < MIN_ABI_MINOR
 #error "libpandoc.h is older than the libpandoc this module needs"
 #endif
