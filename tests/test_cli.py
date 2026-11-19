@@ -121,6 +121,33 @@ def test_help_lists_installed_filters(site):
     assert "run in process by -F NAME: cells" in out
 
 
+@pytest.mark.parametrize("args", [["--version"], ["-t", "html"]])
+def test_a_closed_standard_output_ends_quietly(args):
+    """A standard output closed before anything is written to it (as
+    ``| head`` may leave it): pandoc's status and nothing said, as with
+    pandoc, for pandoc's output and for pandocpy's own line after it
+    (--version)."""
+    r, w = os.pipe()
+    os.close(r)
+    try:
+        proc = subprocess.run([sys.executable, "-m", "libpandoc", *args], input=b"*hi*",
+                              stdout=w, stderr=subprocess.PIPE, check=False)
+    finally:
+        os.close(w)
+    assert (proc.returncode, proc.stderr.decode()) == (0, "")
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="/dev/full is Linux's")
+def test_a_full_standard_output_is_an_error():
+    """Another failure to write its own line: said, status 1."""
+    with open("/dev/full", "wb") as full:
+        proc = subprocess.run([sys.executable, "-m", "libpandoc", "--version"],
+                              stdin=subprocess.DEVNULL, stdout=full, stderr=subprocess.PIPE,
+                              check=False)
+    assert (proc.returncode, proc.stderr.decode()) == (
+        1, "pandocpy: [Errno 28] No space left on device\n")
+
+
 def test_a_filters_exception(tmp_path, monkeypatch, capfd):
     def boom(doc):
         raise RuntimeError("boom in the filter")
