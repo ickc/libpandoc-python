@@ -105,7 +105,8 @@ pandoc.write(f(doc), "plain")
   nothing the document names, with a `timeout` and memory of its own (a
   separate process, or a container with a memory limit).
 - **Filters**: `filters=` takes pandoc's (Lua or JSON filter paths,
-  `"citeproc"`) and Python ones, mixed, in order. A Python filter is a
+  `"citeproc"`, the include step `"panclude"`: below) and Python ones,
+  mixed, in order. A Python filter is a
   [panir](https://github.com/ickc/panir) `Filter`, or a function that
   takes a document (and optionally the `panir.Conversion`) and changes it.
   Python filters run in this process, inside the one pandoc conversion, as
@@ -134,7 +135,8 @@ filters 0.2 s more, panir parsing and writing it. **Consecutive
 filters of this process share one exchange, by default**: Python filters
 (`panir.Filter`s, functions), Python filter scripts (in this process or as
 a subprocess) and wasm filters (`WasmFilter`, `.wasm` paths). One of
-pandoc's own (a Lua filter, a JSON filter program, `citeproc`) ends a run.
+pandoc's own (a Lua filter, a JSON filter program, `citeproc`, the include
+step) ends a run.
 The same in `convert`, `read`, `write`, `pandocpy` (`-F a.py -F b.py`) and
 the directory sandbox. Within a run, from one filter to the next:
 
@@ -322,7 +324,7 @@ returns it can: below the list):
   checks them: `"untrusted"`). So they read no file, not even one the
   filter can read itself: for citeproc, the filter reads the
   bibliography, style and abbreviations itself and gives them as their
-  contents (below). A filter can't name a cancel token (`"untrusted"` is
+  contents (below); the include step, named in a call, reads nothing. A filter can't name a cancel token (`"untrusted"` is
   written over what it wrote); its calls stop with the conversion they
   run in;
 - **time and memory**, which pandoc limits for no filter:
@@ -372,6 +374,61 @@ A filter that reads files reads what the document asks for, within its
 directories (an include filter; citeproc on the metadata's
 `bibliography`): when the document isn't trusted either, give the filter
 no more than the document's own list (`LIBPANDOC_SANDBOX`).
+
+## The include step: panclude
+
+[panclude](https://github.com/ickc/panclude)'s `include` attribute is
+built into libpandoc (1.15): a code block, raw block or div naming a file
+is filled with it inside the conversion, so that every filter after the
+step sees the content as if the document held it. It is off unless named
+among the filters: `filters=["panclude", ...]`, or `pandocpy -F
+panclude`; first, before the filters that are to see the content.
+
+````markdown
+```{.parse include="part.md"}
+placeholder
+```
+````
+
+```sh
+pandocpy -F panclude -F parse.wasm -F upper.wasm doc.md
+```
+
+libpandoc-rs's example filters `parse.wasm` (the block's text read as
+markdown) and `upper.wasm` (upper-cased) are given no directory, yet get
+`part.md`'s text: the step put it into the document. Without `-F
+panclude` they get `placeholder`.
+
+**Roots.** The step reads only inside its roots: by default the main
+document's directory (its first input file's; the working directory when
+the source is given to `convert`), or those an entry names instead,
+`{"type": "panclude", "roots": ["chapters", Path("/srv/shared")]}`
+(relative ones from the working directory; one that isn't a directory, or
+another key, is a `PandocError`). A path outside them (`../x`, an
+absolute path elsewhere, a symbolic link leading out) is not read: the
+element stays as it was, with a `PandocWarning`, `[ScriptingWarning]
+Scripting warning: panclude: cannot include "../x" in doc.md: outside the
+roots` (`fail_if_warnings=True` makes it an error).
+
+**Sandboxes.** With `sandbox=True` (`--sandbox`) only roots named count:
+`"panclude"` alone reads nothing. With `untrusted=True` the options may
+name the step, `filters=["panclude"]`, not its roots, and it reads
+nothing; the host gives roots in `untrusted`'s value,
+`untrusted={"panclude-roots": [...]}`, which the code's options can't
+name (with `cancel=`, and on the main thread, the call's token goes in
+beside them). A wasm filter's calls to pandoc are given none: a filter
+naming the step in a call reads nothing. In the directory sandbox the step
+reads only inside the mounted directories, its roots named as the module
+sees them, untouched like the options' other paths (the same paths on
+Unix; on Windows relative ones with `/`, or `/c/...` for `C:\...`); a root
+not mounted is no directory there, a `PandocError`.
+
+**The name** is reserved: `"panclude"` is never a Python script or a
+program in the working directory (`./panclude` is), nor an installed
+filter of that name in `pandocpy`.
+
+The syntax (line ranges, `raw=`, a div filled with a document, nested
+includes) and the warnings: [panclude](https://github.com/ickc/panclude).
 
 ## Security: documents you don't trust
 
@@ -641,7 +698,7 @@ or a staged `dist/` prefix):
 LIBPANDOC_PREFIX=/path/to/prefix pip install .
 ```
 
-It needs libpandoc 1.14 or a later 1.x (libpandoc's rule: the same major
+It needs libpandoc 1.15 or a later 1.x (libpandoc's rule: the same major
 version, a minor at least as large), checked when the package is imported,
 for libpandoc.wasm in Pyodide too. The extension then finds the library in
 that prefix when it runs (an RPATH). `LIBPANDOC_RPATH` sets another, e.g. `$ORIGIN/...` relative to the
