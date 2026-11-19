@@ -100,13 +100,17 @@ class CancelToken:
 def options(opts: Mapping[str, Any], token: CancelToken | None) -> Mapping[str, Any]:
     """The options with libpandoc's ``"cancel-token"`` for ``token``; for
     untrusted ones (any ``"untrusted"`` but false), inside the key the host
-    writes, over whatever it was: ``"untrusted": {"cancel-token": N}``
-    (libpandoc 1.14), as a top-level one beside ``"untrusted"`` is refused
-    (the code could have written it)."""
+    writes, ``"untrusted": {"cancel-token": N}`` (libpandoc 1.14), as a
+    top-level one beside ``"untrusted"`` is refused (the code could have
+    written it). What else the caller wrote there stays (its
+    ``"panclude-roots"``, libpandoc 1.15), the token winning over one of
+    its own."""
     if token is None or not token._id:
         return opts
-    if opts.get("untrusted", False) is not False:
-        return {**opts, "untrusted": {"cancel-token": token._id}}
+    host = opts.get("untrusted", False)
+    if host is not False:
+        given = dict(host) if isinstance(host, Mapping) else {}
+        return {**opts, "untrusted": {**given, "cancel-token": token._id}}
     return {**opts, "cancel-token": token._id}
 
 

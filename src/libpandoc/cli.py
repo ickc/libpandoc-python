@@ -15,6 +15,9 @@ the conversion, instead of as a separate program:
 
     $ pandocpy -F pantable input.md -o output.html
 
+``-F panclude`` is libpandoc's include step, never a filter of that name
+(an installed one, a script or a program: that runs as ``-F ./panclude``).
+
 Python filter scripts (``-F foo.py``) run in this process too, unless they or
 the user say otherwise (``# pandocpy: subprocess``, ``$PANDOCPY_SUBPROCESS``):
 see ``libpandoc._scripts``. So do wasm filters (``-F foo.wasm``, with
@@ -49,7 +52,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from importlib.metadata import PackageNotFoundError, distributions, version
 from typing import Any
 
-from . import PandocError, _callbacks, _core, _run, _sandbox, query
+from . import _PANCLUDE, PandocError, _callbacks, _core, _run, _sandbox, query
 from ._wasmfilter import WasmFilterError
 
 GROUP = "panir.filters"
@@ -69,7 +72,9 @@ def installed_filters() -> dict[str, Any]:
     found: dict[str, Any] = {}
     for dist in distributions(path=path):
         for ep in dist.entry_points.select(group=GROUP):
-            found.setdefault(ep.name, ep)
+            # (-F panclude is libpandoc's include step, never a filter's)
+            if ep.name != _PANCLUDE:
+                found.setdefault(ep.name, ep)
     return found
 
 
